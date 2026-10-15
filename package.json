@@ -1,0 +1,12 @@
+{
+  "name": "survey-local-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first survey management MVP using Node.js built-ins only",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
