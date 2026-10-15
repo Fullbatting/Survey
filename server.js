@@ -4,6 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const os = require("node:os");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -132,8 +133,25 @@ function publicForm(form) {
   return { id: form.id, slug: form.slug, title: form.title, description: form.description, questions: form.questions, status: form.status, createdAt: form.createdAt, updatedAt: form.updatedAt };
 }
 
+function lanAddress() {
+  const virtual = /vEthernet|VirtualBox|VMware|WSL|Hyper-V|Loopback|docker|Tailscale|ZeroTier/i;
+  const found = [];
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family === "IPv4" && !a.internal && !a.address.startsWith("169.254.")) found.push({ name, address: a.address });
+    }
+  }
+  return (found.find(a => !virtual.test(a.name)) || found[0])?.address || null;
+}
+
+function shareInfo() {
+  const host = ["0.0.0.0", "::"].includes(HOST) ? lanAddress() : HOST;
+  const localOnly = !host || ["127.0.0.1", "localhost", "::1"].includes(host);
+  return { baseUrl: `http://${localOnly ? "127.0.0.1" : host}:${PORT}`, localOnly };
+}
+
 function serveStatic(req, res, pathname) {
-  const mapped = pathname === "/" ? "/index.html" : pathname;
+  const mapped = pathname === "/" || /^\/(f|edit|results)\/[a-f0-9-]+$/.test(pathname) ? "/index.html" : pathname;
   const file = path.resolve(PUBLIC_DIR, "." + decodeURIComponent(mapped));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return sendText(res, 403, "Forbidden");
   fs.readFile(file, (err, data) => {
@@ -178,7 +196,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === "GET" && p === "/api/session") {
       const session = getSession(req);
-      return send(res, 200, { authenticated: Boolean(session), username: session?.user || null });
+      return send(res, 200, { authenticated: Boolean(session), username: session?.user || null, share: session ? shareInfo() : null });
     }
 
     if (p.startsWith("/api/admin/") && !requireAdmin(req, res)) return;
@@ -207,7 +225,8 @@ const server = http.createServer(async (req, res) => {
       const db = readDb();
       const form = db.forms.find(f => f.id === editMatch[1]);
       if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      if (form.status === "published" && db.responses.some(r => r.formId === form.id)) {
+      const locked = db.responses.some(r => r.formId === form.id);
+      if (locked) {
         // MVP: changing questions after responses would complicate interpretation. Allow title/description but freeze questions.
         form.title = cleanString(body.title, 200) || form.title;
         form.description = cleanString(body.description, 2000);
@@ -218,7 +237,7 @@ const server = http.createServer(async (req, res) => {
       }
       form.updatedAt = new Date().toISOString();
       writeDb(db);
-      return send(res, 200, { form: publicForm(form), questionsLocked: form.status === "published" && db.responses.some(r => r.formId === form.id) });
+      return send(res, 200, { form: publicForm(form), questionsLocked: locked });
     }
 
     const statusMatch = p.match(/^\/api\/admin\/forms\/([a-f0-9-]+)\/status$/);
@@ -297,6 +316,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Survey MVP running at http://${HOST}:${PORT}`);
+  const share = shareInfo();
+  console.log(share.localOnly ? "Survey links work on this PC only. Set HOST=0.0.0.0 to share on your network." : `Survey links use ${share.baseUrl}`);
   console.log(`Admin username: ${ADMIN_USER}`);
   if (ADMIN_PASSWORD === "change-this-password") {
     console.warn("WARNING: Set ADMIN_PASSWORD before using this app beyond local testing.");
