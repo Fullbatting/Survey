@@ -6,6 +6,7 @@ rem ===== Settings (edit with Notepad) =====
 rem Do not use the characters % or " in values.
 set "ADMIN_USER=admin"
 set "ADMIN_PASSWORD=change-this-password"
+rem HOST=0.0.0.0 : open survey links and QR codes from phones on the same Wi-Fi
 set "HOST=127.0.0.1"
 set "PORT=3000"
 rem ========================================
