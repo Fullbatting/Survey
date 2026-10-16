@@ -15,7 +15,19 @@ const HOST = process.env.HOST || "127.0.0.1";
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "change-this-password";
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const QUESTION_TYPES = ["text", "textarea", "radio", "checkbox", "select", "rating"];
+const CHOICE_TYPES = ["radio", "checkbox", "select"];
+const FORM_NOT_FOUND = "설문을 찾을 수 없습니다.";
+const NOT_ACCEPTING = "현재 응답을 받지 않는 설문입니다.";
 const sessions = new Map();
+
+// Errors meant for the client: the message is sent as-is with this status.
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) {
@@ -82,14 +94,14 @@ function readBody(req, limit = 1024 * 1024) {
     req.on("data", chunk => {
       data += chunk;
       if (Buffer.byteLength(data) > limit) {
-        reject(new Error("요청 본문이 너무 큽니다."));
+        reject(new HttpError(400, "요청 본문이 너무 큽니다."));
         req.destroy();
       }
     });
     req.on("end", () => {
       if (!data) return resolve({});
       try { resolve(JSON.parse(data)); }
-      catch { reject(new Error("JSON 형식이 올바르지 않습니다.")); }
+      catch { reject(new HttpError(400, "JSON 형식이 올바르지 않습니다.")); }
     });
     req.on("error", reject);
   });
@@ -102,14 +114,14 @@ function cleanString(value, max = 500) {
 function normalizeQuestions(input) {
   if (!Array.isArray(input)) return [];
   return input.slice(0, 100).map((q, i) => {
-    const type = ["text", "textarea", "radio", "checkbox", "select", "rating"].includes(q.type) ? q.type : "text";
+    const type = QUESTION_TYPES.includes(q.type) ? q.type : "text";
     const options = Array.isArray(q.options) ? q.options.map(v => cleanString(v, 200)).filter(Boolean).slice(0, 50) : [];
     return {
       id: cleanString(q.id, 80) || crypto.randomUUID(),
       title: cleanString(q.title, 300) || `질문 ${i + 1}`,
       type,
       required: Boolean(q.required),
-      options: ["radio", "checkbox", "select"].includes(type) ? options : []
+      options: CHOICE_TYPES.includes(type) ? options : []
     };
   });
 }
@@ -137,6 +149,22 @@ function questionKey(form) {
 
 function publicForm(form) {
   return { id: form.id, slug: form.slug, title: form.title, description: form.description, questions: form.questions, questionKey: questionKey(form), status: form.status, createdAt: form.createdAt, updatedAt: form.updatedAt };
+}
+
+const nowIso = () => new Date().toISOString();
+const countResponses = (db, formId) => db.responses.filter(r => r.formId === formId).length;
+
+function formById(db, id) {
+  const form = db.forms.find(f => f.id === id);
+  if (!form) throw new HttpError(404, FORM_NOT_FOUND);
+  return form;
+}
+
+function openFormBySlug(db, slug) {
+  const form = db.forms.find(f => f.slug === slug);
+  if (!form) throw new HttpError(404, FORM_NOT_FOUND);
+  if (form.status !== "published") throw new HttpError(410, NOT_ACCEPTING);
+  return form;
 }
 
 // Offline answer QR payload: base64url JSON { s: slug, k: questionKey, n: nonce, a: [answer per question] }.
@@ -198,168 +226,161 @@ function serveStatic(req, res, pathname) {
   });
 }
 
+// ---------- routes ----------
+
+async function login(req, res) {
+  const body = await readBody(req, 10000);
+  const userOk = cleanString(body.username, 100) === ADMIN_USER;
+  const pass = typeof body.password === "string" ? body.password : "";
+  const passOk = crypto.timingSafeEqual(
+    Buffer.from(crypto.createHash("sha256").update(pass).digest("hex")),
+    Buffer.from(crypto.createHash("sha256").update(ADMIN_PASSWORD).digest("hex"))
+  );
+  if (!userOk || !passOk) throw new HttpError(401, "아이디 또는 비밀번호가 올바르지 않습니다.");
+  const sid = crypto.randomBytes(32).toString("hex");
+  sessions.set(sid, { user: ADMIN_USER, expires: Date.now() + SESSION_TTL_MS });
+  send(res, 200, { ok: true, username: ADMIN_USER }, { "Set-Cookie": `sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800` });
+}
+
+function logout(req, res) {
+  const sid = parseCookies(req.headers.cookie).sid;
+  if (sid) sessions.delete(sid);
+  send(res, 200, { ok: true }, { "Set-Cookie": "sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" });
+}
+
+function sessionInfo(req, res) {
+  const session = getSession(req);
+  send(res, 200, { authenticated: Boolean(session), username: session?.user || null, share: session ? shareInfo() : null });
+}
+
+function listForms(req, res) {
+  const db = readDb();
+  send(res, 200, { forms: db.forms.map(f => ({ ...publicForm(f), responseCount: countResponses(db, f.id) })) });
+}
+
+async function createForm(req, res) {
+  const body = await readBody(req);
+  const title = cleanString(body.title, 200);
+  if (!title) throw new HttpError(400, "설문 제목을 입력해 주세요.");
+  const db = readDb();
+  const now = nowIso();
+  const form = { id: crypto.randomUUID(), slug: crypto.randomBytes(8).toString("hex"), title, description: cleanString(body.description, 2000), questions: normalizeQuestions(body.questions), status: "draft", createdAt: now, updatedAt: now };
+  db.forms.unshift(form);
+  writeDb(db);
+  send(res, 201, { form: publicForm(form) });
+}
+
+async function updateForm(req, res, id) {
+  const body = await readBody(req);
+  const db = readDb();
+  const form = formById(db, id);
+  // MVP: changing questions after responses would complicate interpretation. Allow title/description but freeze questions.
+  const locked = db.responses.some(r => r.formId === form.id);
+  form.title = cleanString(body.title, 200) || form.title;
+  form.description = cleanString(body.description, 2000);
+  if (!locked) form.questions = normalizeQuestions(body.questions);
+  form.updatedAt = nowIso();
+  writeDb(db);
+  send(res, 200, { form: publicForm(form), questionsLocked: locked });
+}
+
+async function setStatus(req, res, id) {
+  const body = await readBody(req, 10000);
+  if (!["draft", "published", "closed"].includes(body.status)) throw new HttpError(400, "상태 값이 올바르지 않습니다.");
+  const db = readDb();
+  const form = formById(db, id);
+  if (body.status === "published" && form.questions.length === 0) throw new HttpError(400, "게시하려면 질문을 하나 이상 추가해야 합니다.");
+  form.status = body.status;
+  form.updatedAt = nowIso();
+  writeDb(db);
+  send(res, 200, { form: publicForm(form) });
+}
+
+function getResults(req, res, id) {
+  const db = readDb();
+  const form = formById(db, id);
+  const responses = db.responses.filter(r => r.formId === form.id);
+  send(res, 200, { form: publicForm(form), total: responses.length, responses });
+}
+
+function deleteForm(req, res, id) {
+  const db = readDb();
+  db.forms = db.forms.filter(f => f.id !== id);
+  db.responses = db.responses.filter(r => r.formId !== id);
+  writeDb(db);
+  send(res, 200, { ok: true });
+}
+
+function getPublicForm(req, res, slug) {
+  send(res, 200, { form: publicForm(openFormBySlug(readDb(), slug)) });
+}
+
+async function submitResponse(req, res, slug) {
+  const body = await readBody(req, 1024 * 1024);
+  const db = readDb();
+  const form = openFormBySlug(db, slug);
+  const error = validateAnswers(form, body.answers);
+  if (error) throw new HttpError(400, error);
+  db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: nowIso(), answers: body.answers });
+  writeDb(db);
+  send(res, 201, { ok: true, message: "응답이 제출되었습니다." });
+}
+
+async function saveOfflineResponse(req, res) {
+  const body = await readBody(req, 20000);
+  let data;
+  try { data = JSON.parse(Buffer.from(cleanString(body.payload, 12000), "base64url").toString("utf8")); } catch { data = null; }
+  const nonce = cleanString(data?.n, 40);
+  if (!data || typeof data !== "object" || !Array.isArray(data.a) || !nonce) throw new HttpError(400, "응답 QR을 읽을 수 없습니다.");
+  const db = readDb();
+  const form = openFormBySlug(db, data.s);
+  if (data.k !== questionKey(form) || data.a.length !== form.questions.length) throw new HttpError(409, "설문 문항이 바뀌어 이 응답 QR은 저장할 수 없습니다. 새 오프라인 QR을 비치해 주세요.");
+  if (db.responses.some(r => r.formId === form.id && r.offlineNonce === nonce)) throw new HttpError(409, "이미 저장된 응답입니다.");
+  const answers = offlineAnswers(form, data.a);
+  const error = answers ? validateAnswers(form, answers) : "응답 QR의 답변 형식이 올바르지 않습니다.";
+  if (error) throw new HttpError(400, error);
+  db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: nowIso(), answers, source: "qr", offlineNonce: nonce });
+  writeDb(db);
+  send(res, 201, { ok: true, formId: form.id, formTitle: form.title, total: countResponses(db, form.id) });
+}
+
+const FORM_ID = "([a-f0-9-]+)";
+const routes = [
+  ["POST", "/api/login", login],
+  ["POST", "/api/logout", logout],
+  ["GET", "/api/session", sessionInfo],
+  ["GET", "/api/health", (req, res) => send(res, 200, { ok: true })],
+  ["POST", "/api/admin/offline-responses", saveOfflineResponse],
+  ["GET", "/api/admin/forms", listForms],
+  ["POST", "/api/admin/forms", createForm],
+  ["PUT", new RegExp(`^/api/admin/forms/${FORM_ID}$`), updateForm],
+  ["DELETE", new RegExp(`^/api/admin/forms/${FORM_ID}$`), deleteForm],
+  ["POST", new RegExp(`^/api/admin/forms/${FORM_ID}/status$`), setStatus],
+  ["GET", new RegExp(`^/api/admin/forms/${FORM_ID}/results$`), getResults],
+  ["GET", /^\/api\/public\/forms\/([a-f0-9]+)$/, getPublicForm],
+  ["POST", /^\/api\/public\/forms\/([a-f0-9]+)$/, submitResponse]
+];
+
+function findRoute(method, pathname) {
+  for (const [m, pattern, handler] of routes) {
+    if (m !== method) continue;
+    if (pattern === pathname) return { handler };
+    const match = pattern instanceof RegExp && pathname.match(pattern);
+    if (match) return { handler, param: match[1] };
+  }
+  return null;
+}
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  const p = url.pathname;
-  const method = req.method || "GET";
-
+  const { pathname } = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
-    if (method === "POST" && p === "/api/login") {
-      const body = await readBody(req, 10000);
-      const userOk = cleanString(body.username, 100) === ADMIN_USER;
-      const pass = typeof body.password === "string" ? body.password : "";
-      const passOk = crypto.timingSafeEqual(
-        Buffer.from(crypto.createHash("sha256").update(pass).digest("hex")),
-        Buffer.from(crypto.createHash("sha256").update(ADMIN_PASSWORD).digest("hex"))
-      );
-      if (!userOk || !passOk) return send(res, 401, { error: "아이디 또는 비밀번호가 올바르지 않습니다." });
-      const sid = crypto.randomBytes(32).toString("hex");
-      sessions.set(sid, { user: ADMIN_USER, expires: Date.now() + SESSION_TTL_MS });
-      return send(res, 200, { ok: true, username: ADMIN_USER }, { "Set-Cookie": `sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800` });
-    }
-
-    if (method === "POST" && p === "/api/logout") {
-      const sid = parseCookies(req.headers.cookie).sid;
-      if (sid) sessions.delete(sid);
-      return send(res, 200, { ok: true }, { "Set-Cookie": "sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" });
-    }
-
-    if (method === "GET" && p === "/api/session") {
-      const session = getSession(req);
-      return send(res, 200, { authenticated: Boolean(session), username: session?.user || null, share: session ? shareInfo() : null });
-    }
-
-    if (p.startsWith("/api/admin/") && !requireAdmin(req, res)) return;
-
-    if (method === "POST" && p === "/api/admin/offline-responses") {
-      const body = await readBody(req, 20000);
-      let data;
-      try { data = JSON.parse(Buffer.from(cleanString(body.payload, 12000), "base64url").toString("utf8")); } catch { data = null; }
-      if (!data || typeof data !== "object" || !Array.isArray(data.a) || !cleanString(data.n, 40)) return send(res, 400, { error: "응답 QR을 읽을 수 없습니다." });
-      const db = readDb();
-      const form = db.forms.find(f => f.slug === data.s);
-      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      if (form.status !== "published") return send(res, 410, { error: "현재 응답을 받지 않는 설문입니다." });
-      if (data.k !== questionKey(form) || data.a.length !== form.questions.length) return send(res, 409, { error: "설문 문항이 바뀌어 이 응답 QR은 저장할 수 없습니다. 새 오프라인 QR을 비치해 주세요." });
-      const nonce = cleanString(data.n, 40);
-      if (db.responses.some(r => r.formId === form.id && r.offlineNonce === nonce)) return send(res, 409, { error: "이미 저장된 응답입니다." });
-      const answers = offlineAnswers(form, data.a);
-      const error = answers ? validateAnswers(form, answers) : "응답 QR의 답변 형식이 올바르지 않습니다.";
-      if (error) return send(res, 400, { error });
-      db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: new Date().toISOString(), answers, source: "qr", offlineNonce: nonce });
-      writeDb(db);
-      return send(res, 201, { ok: true, formId: form.id, formTitle: form.title, total: db.responses.filter(r => r.formId === form.id).length });
-    }
-
-    if (method === "GET" && p === "/api/admin/forms") {
-      const db = readDb();
-      return send(res, 200, { forms: db.forms.map(f => ({ ...publicForm(f), responseCount: db.responses.filter(r => r.formId === f.id).length })) });
-    }
-
-    if (method === "POST" && p === "/api/admin/forms") {
-      const body = await readBody(req);
-      const title = cleanString(body.title, 200);
-      if (!title) return send(res, 400, { error: "설문 제목을 입력해 주세요." });
-      const db = readDb();
-      const slug = crypto.randomBytes(8).toString("hex");
-      const now = new Date().toISOString();
-      const form = { id: crypto.randomUUID(), slug, title, description: cleanString(body.description, 2000), questions: normalizeQuestions(body.questions), status: "draft", createdAt: now, updatedAt: now };
-      db.forms.unshift(form);
-      writeDb(db);
-      return send(res, 201, { form: publicForm(form) });
-    }
-
-    const editMatch = p.match(/^\/api\/admin\/forms\/([a-f0-9-]+)$/);
-    if (editMatch && method === "PUT") {
-      const body = await readBody(req);
-      const db = readDb();
-      const form = db.forms.find(f => f.id === editMatch[1]);
-      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      const locked = db.responses.some(r => r.formId === form.id);
-      if (locked) {
-        // MVP: changing questions after responses would complicate interpretation. Allow title/description but freeze questions.
-        form.title = cleanString(body.title, 200) || form.title;
-        form.description = cleanString(body.description, 2000);
-      } else {
-        form.title = cleanString(body.title, 200) || form.title;
-        form.description = cleanString(body.description, 2000);
-        form.questions = normalizeQuestions(body.questions);
-      }
-      form.updatedAt = new Date().toISOString();
-      writeDb(db);
-      return send(res, 200, { form: publicForm(form), questionsLocked: locked });
-    }
-
-    const statusMatch = p.match(/^\/api\/admin\/forms\/([a-f0-9-]+)\/status$/);
-    if (statusMatch && method === "POST") {
-      const body = await readBody(req, 10000);
-      if (!["draft", "published", "closed"].includes(body.status)) return send(res, 400, { error: "상태 값이 올바르지 않습니다." });
-      const db = readDb();
-      const form = db.forms.find(f => f.id === statusMatch[1]);
-      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      if (body.status === "published" && form.questions.length === 0) return send(res, 400, { error: "게시하려면 질문을 하나 이상 추가해야 합니다." });
-      form.status = body.status;
-      form.updatedAt = new Date().toISOString();
-      writeDb(db);
-      return send(res, 200, { form: publicForm(form) });
-    }
-
-    const resultsMatch = p.match(/^\/api\/admin\/forms\/([a-f0-9-]+)\/results$/);
-    if (resultsMatch && method === "GET") {
-      const db = readDb();
-      const form = db.forms.find(f => f.id === resultsMatch[1]);
-      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      const responses = db.responses.filter(r => r.formId === form.id);
-      const stats = form.questions.map(q => {
-        const counts = {};
-        for (const r of responses) {
-          const v = r.answers[q.id];
-          if (Array.isArray(v)) v.forEach(x => counts[x] = (counts[x] || 0) + 1);
-          else if (v !== undefined && v !== "") counts[String(v)] = (counts[String(v)] || 0) + 1;
-        }
-        return { question: q, counts };
-      });
-      return send(res, 200, { form: publicForm(form), total: responses.length, responses, stats });
-    }
-
-    const deleteMatch = p.match(/^\/api\/admin\/forms\/([a-f0-9-]+)$/);
-    if (deleteMatch && method === "DELETE") {
-      const db = readDb();
-      db.forms = db.forms.filter(f => f.id !== deleteMatch[1]);
-      db.responses = db.responses.filter(r => r.formId !== deleteMatch[1]);
-      writeDb(db);
-      return send(res, 200, { ok: true });
-    }
-
-    const publicMatch = p.match(/^\/api\/public\/forms\/([a-f0-9]+)$/);
-    if (publicMatch && method === "GET") {
-      const db = readDb();
-      const form = db.forms.find(f => f.slug === publicMatch[1]);
-      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      if (form.status !== "published") return send(res, 410, { error: "현재 응답을 받지 않는 설문입니다." });
-      return send(res, 200, { form: publicForm(form) });
-    }
-
-    if (publicMatch && method === "POST") {
-      const body = await readBody(req, 1024 * 1024);
-      const db = readDb();
-      const form = db.forms.find(f => f.slug === publicMatch[1]);
-      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
-      if (form.status !== "published") return send(res, 410, { error: "현재 응답을 받지 않는 설문입니다." });
-      const error = validateAnswers(form, body.answers);
-      if (error) return send(res, 400, { error });
-      const response = { id: crypto.randomUUID(), formId: form.id, submittedAt: new Date().toISOString(), answers: body.answers };
-      db.responses.unshift(response);
-      writeDb(db);
-      return send(res, 201, { ok: true, message: "응답이 제출되었습니다." });
-    }
-
-    if (method === "GET" && p === "/api/health") return send(res, 200, { ok: true });
-
-    if (p.startsWith("/api/")) return send(res, 404, { error: "API 경로를 찾을 수 없습니다." });
-    return serveStatic(req, res, p);
+    if (pathname.startsWith("/api/admin/") && !requireAdmin(req, res)) return;
+    const route = findRoute(req.method || "GET", pathname);
+    if (route) return await route.handler(req, res, route.param);
+    if (pathname.startsWith("/api/")) return send(res, 404, { error: "API 경로를 찾을 수 없습니다." });
+    return serveStatic(req, res, pathname);
   } catch (err) {
-    const status = /JSON|본문이 너무 큽니다/.test(err.message) ? 400 : 500;
+    const status = err instanceof HttpError ? err.status : 500;
     return send(res, status, { error: status === 500 ? "서버 내부 오류가 발생했습니다." : err.message });
   }
 });
