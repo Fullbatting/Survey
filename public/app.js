@@ -14,6 +14,7 @@ const statusChip = (s) => `<span class="status ${esc(s)}">${statusLabel(s)}</spa
 const getSlug = () => location.pathname.match(/^\/f\/([a-f0-9]+)$/)?.[1] || null;
 const getResultsId = () => location.pathname.match(/^\/results\/([a-f0-9-]+)$/)?.[1] || null;
 const getEditId = () => location.pathname.match(/^\/edit\/([a-f0-9-]+)$/)?.[1] || null;
+const getPrintId = () => location.pathname.match(/^\/print\/([a-f0-9-]+)$/)?.[1] || null;
 // crypto.randomUUID needs a secure context; LAN access over http is not one.
 const uid = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -41,6 +42,7 @@ const ICON = {
   search: icon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>', 2.2),
   check: icon('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 2.6),
   info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/>'),
+  print: icon('<path d="M7 9V3h10v6M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="7" rx="1"/>'),
   qr: icon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v7h-7"/>'),
   grip: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>'
 };
@@ -76,10 +78,12 @@ const markTab = (tab) => app.querySelectorAll("[data-tab]").forEach(el => el.set
 
 async function render() {
   closeModal();
+  clearTimeout(kioskTimer);
   try {
     const slug = getSlug();
     if (slug) { setHeader(false); await renderPublic(slug); return; }
     const session = await api("/api/session");
+    if (!session.adminAllowed) { setHeader(false); renderAdminBlocked(); return; }
     if (!session.authenticated) { setHeader(false); renderLogin(); return; }
     share = session.share || share;
     setHeader(true);
@@ -87,6 +91,8 @@ async function render() {
     if (resultsId) { await renderResults(resultsId); return; }
     const editId = getEditId();
     if (editId) { await renderEditor(editId); return; }
+    const printId = getPrintId();
+    if (printId) { await renderPrint(printId, new URLSearchParams(location.search).get("mode")); return; }
     await renderDashboard();
   } catch (err) {
     app.innerHTML = `<section class="card"><div class="error">${esc(err.message)}</div><button class="btn" id="retry">다시 시도</button></section>`;
@@ -101,6 +107,10 @@ function renderLogin(error = "") {
     try { await api("/api/login", "POST", { username:fd.get("username"), password:fd.get("password") }); navigate("/"); }
     catch (err) { renderLogin(err.message); }
   });
+}
+
+function renderAdminBlocked() {
+  app.innerHTML = `<div class="login-wrap"><section class="card"><div class="brand-mark login-mark">S</div><h1>서버 PC 전용 화면</h1><p class="subhead">설문 관리와 결과 확인은 설문 서버가 실행 중인 PC에서만 열 수 있습니다. 설문에 응답하려면 비치된 QR 코드를 스캔해 주세요.</p></section></div>`;
 }
 
 // ---------- QR / share ----------
@@ -124,6 +134,7 @@ function shareBanner() {
 }
 const SHARE_MODES = {
   link: { label:"링크 QR", title:"공개 링크", link:(f) => formLink(f.slug), file:"survey-qr", desc:"같은 Wi-Fi의 휴대폰에서 설문이 열리고, 응답이 서버에 바로 저장됩니다." },
+  kiosk: { label:"태블릿", title:"태블릿(키오스크) 링크", link:(f) => `${formLink(f.slug)}?kiosk=1`, file:"survey-kiosk-qr", desc:"병원 태블릿에서 이 링크를 열어 두세요. 응답을 제출하면 몇 초 뒤, 입력 중 2분간 조작이 없으면 바로 처음 화면으로 돌아가 다음 환자가 이전 응답을 볼 수 없습니다. 태블릿은 화면 고정(안드로이드 '앱 고정', 아이패드 '사용법 유도')을 켜 두세요." },
   offline: { label:"오프라인 QR", title:"오프라인 설문 링크", link:offlineLink, file:"survey-offline-qr", desc:"응답을 마치면 휴대폰에 응답 QR이 표시됩니다. 접수처에서 [응답 QR 스캔]으로 읽어 저장하며, 응답은 네트워크로 전송되지 않습니다. 프로토타입에서는 설문 페이지를 이 서버가 제공하므로 같은 Wi-Fi가 필요합니다(offline.html을 정적 호스팅에 올리면 LTE에서도 열림)." }
 };
 function drawShare(root, form, mode = "link", { notices = true } = {}) {
@@ -131,13 +142,14 @@ function drawShare(root, form, mode = "link", { notices = true } = {}) {
   const status = !notices ? "" : form.status === "draft" ? `<div class="notice">${ICON.info}<span>아직 <strong>작성 중</strong> 상태입니다. 질문을 구성하고 게시하면 이 링크·QR로 응답을 받을 수 있습니다.</span></div>`
     : form.status === "closed" ? `<div class="notice">${ICON.info}<span>응답이 종료된 설문입니다. 다시 게시하면 응답을 받을 수 있습니다.</span></div>` : "";
   root.innerHTML = `<div class="seg" role="tablist">${Object.entries(SHARE_MODES).map(([k, v]) => `<button type="button" role="tab" data-mode="${k}" aria-selected="${k === mode}">${v.label}</button>`).join("")}</div>
-  <div class="share-body"><figure class="qr-box">${qrSvg(link, { size:188, label:`${form.title} ${m.label} 코드` })}</figure><div class="share-side"><span class="label">${m.title}</span><div class="link-box${mode === "offline" ? " clamp" : ""}">${esc(link)}</div><div class="btn-pair"><button type="button" class="btn secondary" data-act="copy">${ICON.copy}링크 복사</button><button type="button" class="btn secondary" data-act="qr">${ICON.download}QR 이미지 저장</button></div><p class="muted small mode-desc">${m.desc}</p>${status}${share.localOnly ? `<div class="notice">${ICON.info}<span>${LOCAL_ONLY_TEXT}</span></div>` : ""}</div></div>`;
+  <div class="share-body"><figure class="qr-box">${qrSvg(link, { size:188, label:`${form.title} ${m.label} 코드` })}</figure><div class="share-side"><span class="label">${m.title}</span><div class="link-box${mode === "offline" ? " clamp" : ""}">${esc(link)}</div><div class="btn-pair"><button type="button" class="btn secondary" data-act="copy">${ICON.copy}링크 복사</button><button type="button" class="btn secondary" data-act="qr">${ICON.download}QR 이미지 저장</button></div><button type="button" class="link-btn" data-act="print">${ICON.print}진료실 비치용 인쇄 페이지</button><p class="muted small mode-desc">${m.desc}</p>${status}${share.localOnly ? `<div class="notice">${ICON.info}<span>${LOCAL_ONLY_TEXT}</span></div>` : ""}</div></div>`;
   root.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => {
     drawShare(root, form, b.dataset.mode, { notices });
     root.querySelector(`[data-mode="${b.dataset.mode}"]`).focus();
   }));
   root.querySelector('[data-act="copy"]').addEventListener("click", () => copyText(link));
   root.querySelector('[data-act="qr"]').addEventListener("click", () => downloadQr(link, `${m.file}-${form.slug}`));
+  root.querySelector('[data-act="print"]').addEventListener("click", () => navigate(`/print/${form.id}?mode=${mode}`));
 }
 
 // ---------- modal ----------
@@ -290,7 +302,7 @@ async function renderEditor(id) {
   const { forms } = await api("/api/admin/forms");
   const form = forms.find(f => f.id === id);
   if (!form) { app.innerHTML = '<section class="card">설문을 찾을 수 없습니다.</section>'; return; }
-  editor = { form, title:form.title, description:form.description || "", questions:clone(form.questions), openId:form.questions[0]?.id || null, dirty:false, tab:"edit" };
+  editor = { form, title:form.title, description:form.description || "", consent:form.consent || "", questions:clone(form.questions), openId:form.questions[0]?.id || null, dirty:false, tab:"edit" };
   drawEditor();
 }
 function drawEditor() {
@@ -329,12 +341,12 @@ function setEditorTab(tab) {
 function drawEditorMain() {
   const main = document.getElementById("editor-main");
   if (editor.tab === "preview") {
-    main.innerHTML = `<div class="preview-frame"><header class="public-head"><h1>${esc(editor.title)}</h1><p>${esc(editor.description || "아래 질문에 응답해 주세요.")}</p></header><form class="card" id="preview-form">${editor.questions.length ? questionFieldsHtml(editor.questions) : '<div class="empty">질문을 추가해 주세요.</div>'}<button class="btn wide" type="submit" disabled>응답 제출</button><p class="muted small center form-note">미리보기에서는 응답을 제출할 수 없습니다.</p></form></div>`;
+    main.innerHTML = `<div class="preview-frame"><header class="public-head"><h1>${esc(editor.title)}</h1><p>${esc(editor.description || "아래 질문에 응답해 주세요.")}</p></header><form class="card" id="preview-form">${consentHtml(editor.consent)}${editor.questions.length ? questionFieldsHtml(editor.questions) : '<div class="empty">질문을 추가해 주세요.</div>'}<button class="btn wide" type="submit" disabled>응답 제출</button><p class="muted small center form-note">미리보기에서는 응답을 제출할 수 없습니다.</p></form></div>`;
     document.getElementById("preview-form").addEventListener("submit", e => e.preventDefault());
     return;
   }
   const locked = editor.form.responseCount > 0;
-  main.innerHTML = `<section class="card"><div class="field"><label for="form-title">설문 제목</label><input class="input" id="form-title" maxlength="200" value="${esc(editor.title)}"></div><div class="field"><label for="form-description">설명</label><textarea id="form-description" maxlength="2000">${esc(editor.description)}</textarea></div></section>
+  main.innerHTML = `<section class="card"><div class="field"><label for="form-title">설문 제목</label><input class="input" id="form-title" maxlength="200" value="${esc(editor.title)}"></div><div class="field"><label for="form-description">설명</label><textarea id="form-description" maxlength="2000">${esc(editor.description)}</textarea></div><div class="field"><label for="form-consent">응답 전 동의 안내 <span class="muted">(선택)</span></label><textarea id="form-consent" maxlength="2000" placeholder="예: 진료 개선을 위해 응답을 수집하며, 6개월 보관 후 삭제합니다.">${esc(editor.consent)}</textarea><p class="muted small field-hint">입력하면 응답자가 이 내용에 동의해야 응답할 수 있습니다.</p></div></section>
   <div class="toolbar"><h2>질문 구성</h2><span class="muted small" id="question-count"></span></div>
   <div class="question-list" id="questions"></div>
   ${locked ? "" : `<section class="add-box"><span class="label">질문 추가</span><div class="add-grid">${Object.entries(TYPE_LABELS).map(([t, l]) => `<button type="button" class="btn secondary" data-add="${t}">${l}</button>`).join("")}</div></section>`}`;
@@ -420,6 +432,7 @@ function onEditorInput(e) {
   const t = e.target;
   if (t.id === "form-title") editor.title = t.value;
   else if (t.id === "form-description") editor.description = t.value;
+  else if (t.id === "form-consent") editor.consent = t.value;
   else {
     const q = questionOf(t);
     if (!q) return;
@@ -462,9 +475,9 @@ function onEditorClick(e) {
 async function saveEditor() {
   if (!editor.title.trim()) { toast("설문 제목을 입력해 주세요."); return false; }
   try {
-    const data = await api(`/api/admin/forms/${editor.form.id}`, "PUT", { title:editor.title, description:editor.description, questions:editor.questions });
+    const data = await api(`/api/admin/forms/${editor.form.id}`, "PUT", { title:editor.title, description:editor.description, consent:editor.consent, questions:editor.questions });
     Object.assign(editor.form, data.form);
-    editor.title = data.form.title; editor.description = data.form.description; editor.questions = clone(data.form.questions);
+    editor.title = data.form.title; editor.description = data.form.description; editor.consent = data.form.consent; editor.questions = clone(data.form.questions);
     if (!editor.questions.some(q => q.id === editor.openId)) editor.openId = editor.questions[0]?.id || null;
     editor.dirty = false;
     return true;
@@ -481,19 +494,77 @@ async function changeStatus(status) {
 }
 
 // ---------- public ----------
+const KIOSK_RESET_SEC = 8, KIOSK_IDLE_MS = 2 * 60 * 1000;
+let kioskTimer = null;
 async function renderPublic(slug) {
   const { form } = await api(`/api/public/forms/${slug}`);
-  app.innerHTML = `<div class="public-wrap"><header class="public-head"><h1>${esc(form.title)}</h1><p>${esc(form.description || "아래 질문에 응답해 주세요.")}</p></header><form class="card" id="public-form">${questionFieldsHtml(form.questions)}<button class="btn wide">응답 제출</button><p class="muted small center form-note">제출 후에는 응답을 수정할 수 없습니다.</p></form></div>`;
-  document.getElementById("public-form").addEventListener("submit", async e => {
+  drawPublic(slug, form, new URLSearchParams(location.search).has("kiosk"));
+}
+// Kiosk mode (clinic tablet): after a submission, or after a while without any input, the form starts over
+// so the next patient cannot see earlier answers.
+function drawPublic(slug, form, kiosk) {
+  clearTimeout(kioskTimer);
+  app.innerHTML = `<div class="public-wrap"><header class="public-head"><h1>${esc(form.title)}</h1><p>${esc(form.description || "아래 질문에 응답해 주세요.")}</p></header><form class="card" id="public-form">${consentHtml(form.consent)}${questionFieldsHtml(form.questions)}<button class="btn wide">응답 제출</button><p class="muted small center form-note">제출 후에는 응답을 수정할 수 없습니다.</p></form></div>`;
+  window.scrollTo(0, 0);
+  const formEl = document.getElementById("public-form");
+  const restart = () => drawPublic(slug, form, kiosk);
+  if (kiosk) {
+    const arm = () => { clearTimeout(kioskTimer); kioskTimer = setTimeout(restart, KIOSK_IDLE_MS); };
+    ["input", "pointerdown", "keydown"].forEach(type => formEl.addEventListener(type, arm));
+  }
+  formEl.addEventListener("submit", async e => {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget), btn = e.currentTarget.querySelector("button");
+    const fd = new FormData(formEl), btn = formEl.querySelector("button");
     const answers = Object.fromEntries(form.questions.map(q => [q.id, q.type === "checkbox" ? fd.getAll(q.id) : fd.get(q.id) || ""]));
     btn.disabled = true;
     try {
-      await api(`/api/public/forms/${slug}`, "POST", { answers });
-      app.innerHTML = `<div class="public-wrap"><section class="card empty"><div class="emoji">✓</div><strong>응답이 제출되었습니다.</strong><p>참여해 주셔서 감사합니다.</p></section></div>`;
+      await api(`/api/public/forms/${slug}`, "POST", { answers, consent:fd.has("__consent") });
+      clearTimeout(kioskTimer);
+      app.innerHTML = `<div class="public-wrap"><section class="card empty"><div class="emoji">✓</div><strong>응답이 제출되었습니다.</strong><p>참여해 주셔서 감사합니다.</p>${kiosk ? '<p class="muted small" id="kiosk-count"></p><button type="button" class="btn" id="kiosk-next">다음 응답 시작</button>' : ""}</section></div>`;
+      if (kiosk) startKioskCountdown(restart);
     } catch (err) { toast(err.message); btn.disabled = false; }
   });
+}
+function startKioskCountdown(restart) {
+  let left = KIOSK_RESET_SEC;
+  const tick = () => {
+    if (left <= 0) return restart();
+    document.getElementById("kiosk-count").textContent = `${left}초 후 처음 화면으로 돌아갑니다.`;
+    left--;
+    kioskTimer = setTimeout(tick, 1000);
+  };
+  document.getElementById("kiosk-next").addEventListener("click", restart);
+  tick();
+}
+
+// ---------- print sheet ----------
+// Wi-Fi join QR (ZXing "WIFI:" format); special characters are backslash-escaped.
+function wifiQrText({ ssid, password }) {
+  const e = (v) => v.replace(/([\\;,:"])/g, "\\$1");
+  return password ? `WIFI:T:WPA;S:${e(ssid)};P:${e(password)};;` : `WIFI:T:nopass;S:${e(ssid)};;`;
+}
+async function renderPrint(id, requested) {
+  const { forms } = await api("/api/admin/forms");
+  const form = forms.find(f => f.id === id);
+  if (!form) { app.innerHTML = '<section class="card">설문을 찾을 수 없습니다.</section>'; return; }
+  const mode = SHARE_MODES[requested] ? requested : "link", wifi = share.wifi;
+  const steps = [
+    wifi && { qr:qrSvg(wifiQrText(wifi), { size:200, label:"Wi-Fi 연결 QR 코드", color:"#000" }), title:"Wi-Fi 연결", text:`휴대폰 카메라로 이 QR을 스캔해 '${esc(wifi.ssid)}' Wi-Fi에 연결하세요.` },
+    { qr:qrSvg(SHARE_MODES[mode].link(form), { size:260, label:"설문 QR 코드", color:"#000" }), title:"설문 열기", text:mode === "kiosk" ? "태블릿 카메라로 이 QR을 스캔해 설문 화면을 열어 두세요." : "휴대폰 카메라로 이 QR을 스캔하면 설문이 열립니다." },
+    mode === "offline" && { title:"응답 QR 보여주기", text:"응답을 마치면 화면에 나오는 QR 코드를 접수처에 보여주세요. 응답은 휴대폰에서 인터넷으로 전송되지 않습니다." }
+  ].filter(Boolean);
+  const notices = [
+    form.status !== "published" && "아직 게시되지 않은 설문입니다. 게시해야 응답을 받을 수 있습니다.",
+    share.localOnly && LOCAL_ONLY_TEXT,
+    !wifi && "Wi-Fi 연결 QR을 함께 인쇄하려면 runserver.bat의 WIFI_SSID와 WIFI_PASSWORD를 설정하세요."
+  ].filter(Boolean);
+  app.innerHTML = `<div class="print-actions no-print">${BACK_LINK}<div class="top-actions"><label class="sr-only" for="print-mode">QR 종류</label><select id="print-mode">${Object.entries(SHARE_MODES).map(([k, v]) => `<option value="${k}" ${k === mode ? "selected" : ""}>${v.label}</option>`).join("")}</select><button class="btn" id="print-btn">${ICON.print}인쇄하기</button></div></div>
+  ${notices.map(n => `<div class="notice no-print">${ICON.info}<span>${n}</span></div>`).join("")}
+  <article class="print-sheet"><p class="print-kicker">설문 참여 안내</p><h1>${esc(form.title)}</h1>${form.description ? `<p class="print-desc">${esc(form.description)}</p>` : ""}
+  <ol class="print-steps">${steps.map((st, i) => `<li class="print-step">${st.qr ? `<figure class="print-qr">${st.qr}</figure>` : ""}<div><strong>${i + 1}. ${st.title}</strong><p>${st.text}</p></div></li>`).join("")}</ol></article>`;
+  bindBackLink();
+  document.getElementById("print-btn").addEventListener("click", () => window.print());
+  document.getElementById("print-mode").addEventListener("change", e => navigate(`/print/${id}?mode=${e.target.value}`));
 }
 
 // ---------- results ----------
@@ -506,12 +577,13 @@ async function renderResults(id) {
 function drawResults() {
   const { data } = results, f = data.form;
   app.innerHTML = `${BACK_LINK}
-  <div class="page-head"><div class="title-row"><h1>${esc(f.title)}</h1>${statusChip(f.status)}</div><div class="top-actions"><button class="btn secondary" id="scan-btn">${ICON.qr}응답 QR 스캔</button><button class="btn secondary" id="edit-form">설문 편집</button><button class="btn" id="export-csv">${ICON.download}CSV 내보내기</button></div></div>
+  <div class="page-head"><div class="title-row"><h1>${esc(f.title)}</h1>${statusChip(f.status)}</div><div class="top-actions"><button class="btn secondary" id="scan-btn">${ICON.qr}응답 QR 스캔</button><button class="btn secondary" id="edit-form">설문 편집</button><button class="btn danger" id="cleanup-btn">응답 정리</button><button class="btn" id="export-csv">${ICON.download}CSV 내보내기</button></div></div>
   ${tabsHtml([["summary", "요약"], ["responses", `개별 응답 <span class="tab-count">${data.total}</span>`]], results.tab)}
   <div id="results-body"></div>`;
   bindBackLink();
   document.getElementById("scan-btn").addEventListener("click", openScanModal);
   document.getElementById("edit-form").addEventListener("click", () => navigate(`/edit/${f.id}`));
+  document.getElementById("cleanup-btn").addEventListener("click", () => openCleanupModal(f, data.total));
   document.getElementById("export-csv").addEventListener("click", () => exportCsv(data));
   onClickAll("[data-tab]", el => setResultsTab(el.dataset.tab));
   drawResultsBody();
@@ -597,8 +669,27 @@ function drawResponseList() {
   items.innerHTML = `<ul class="resp-items">${slice.map(r => `<li><button type="button" class="resp-item" data-select="${r.id}" ${r.id === results.selectedId ? 'aria-current="true"' : ""}><strong>응답 ${r.no}</strong> <span class="muted small">· ${esc(fmtShort(r.submittedAt))}${r.source === "qr" ? " · QR 전달" : ""}</span><span class="resp-summary">${esc(summary(r))}</span></button></li>`).join("")}</ul>
   <div class="pager"><span class="muted small">${start + 1}–${start + slice.length} / ${list.length}건</span><div class="pager-btns"><button type="button" class="icon-btn" data-page="-1" aria-label="이전 페이지" ${results.page === 0 ? "disabled" : ""}>${ICON.back}</button><button type="button" class="icon-btn" data-page="1" aria-label="다음 페이지" ${results.page >= pages - 1 ? "disabled" : ""}>${ICON.next}</button></div></div>`;
   const r = list[idx];
-  detail.innerHTML = `<div class="detail-head"><div><h2>응답 ${r.no}</h2><span class="muted small">${esc(fmtDate(r.submittedAt))} ${r.source === "qr" ? "응답 QR로 저장" : "링크로 제출"}</span></div><div class="pager-btns"><button type="button" class="btn secondary" data-step="-1" ${idx === 0 ? "disabled" : ""}>${ICON.back}이전</button><button type="button" class="btn secondary" data-step="1" ${idx === list.length - 1 ? "disabled" : ""}>다음${ICON.next}</button></div></div>
+  detail.innerHTML = `<div class="detail-head"><div><h2>응답 ${r.no}</h2><span class="muted small">${esc(fmtDate(r.submittedAt))} ${r.source === "qr" ? "응답 QR로 저장" : "링크로 제출"}${r.consented ? " · 동의함" : ""}</span></div><div class="pager-btns"><button type="button" class="btn secondary" data-step="-1" ${idx === 0 ? "disabled" : ""}>${ICON.back}이전</button><button type="button" class="btn secondary" data-step="1" ${idx === list.length - 1 ? "disabled" : ""}>다음${ICON.next}</button></div></div>
   <dl class="answer-dl">${questions.map((q, i) => `<div><dt>${i + 1}. ${esc(q.title)}</dt><dd>${answerHtml(q, r.answers[q.id])}</dd></div>`).join("")}</dl>`;
+}
+function openCleanupModal(form, total) {
+  const today = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD in local time
+  const m = openModal(`<form id="cleanup-form">${modalHead("응답 정리")}
+  <p class="muted small">보관 기간이 지난 응답을 삭제합니다. 삭제한 응답은 되돌릴 수 없으니 먼저 CSV로 내보내 두세요.</p>
+  <fieldset class="choice-cards"><legend>삭제 범위</legend><div class="choice-grid"><label class="choice-card"><input type="radio" name="scope" value="before" checked><span><strong>날짜 이전 응답</strong><small>기준 날짜 0시 전에 접수된 응답</small></span></label><label class="choice-card"><input type="radio" name="scope" value="all"><span><strong>전체 응답</strong><small>${total}건 모두</small></span></label></div></fieldset>
+  <div class="field"><label for="cleanup-date">기준 날짜</label><input class="input" type="date" id="cleanup-date" name="before" max="${today}"></div>
+  <div class="modal-actions"><button type="button" class="btn secondary" data-close>취소</button><button type="submit" class="btn danger">삭제</button></div></form>`);
+  m.querySelector("#cleanup-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget), all = fd.get("scope") === "all", before = fd.get("before");
+    if (!all && !before) { toast("기준 날짜를 선택해 주세요."); return; }
+    if (!confirm(all ? `이 설문의 응답 ${total}건을 모두 삭제할까요?` : `${before} 이전에 접수된 응답을 삭제할까요?`)) return;
+    try {
+      const r = await api(`/api/admin/forms/${form.id}/responses/delete`, "POST", all ? { all:true } : { before });
+      toast(`응답 ${r.deleted}건을 삭제했습니다.`);
+      await renderResults(form.id);
+    } catch (err) { toast(err.message); }
+  });
 }
 function exportCsv(data) {
   const { questions } = data.form;

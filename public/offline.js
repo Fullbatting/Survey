@@ -11,7 +11,7 @@ function renderForm(survey) {
   // Choice answers are sent as option indexes to keep the answer QR small.
   const fields = questionFieldsHtml(survey.questions, { name:(q, i) => `q${i}`, value:(o, j) => j, maxText:MAX_TEXT, showLimit:true });
   app.innerHTML = `<div class="public-wrap"><header class="public-head"><h1>${esc(survey.title)}</h1><p>${esc(survey.description || "아래 질문에 응답해 주세요.")}</p></header>
-  <form class="card" id="offline-form">${fields}<button class="btn wide">응답 완료</button><p class="muted small center form-note">응답은 이 휴대폰에서 인터넷이나 서버로 전송되지 않습니다.</p></form></div>`;
+  <form class="card" id="offline-form">${consentHtml(survey.consent)}${fields}<button class="btn wide">응답 완료</button><p class="muted small center form-note">응답은 이 휴대폰에서 인터넷이나 서버로 전송되지 않습니다.</p></form></div>`;
   document.getElementById("offline-form").addEventListener("submit", e => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -24,7 +24,7 @@ function renderForm(survey) {
       if (!v) return null;
       return ["radio", "select", "rating"].includes(q.type) ? Number(v) : v;
     });
-    renderAnswerQr(survey, toB64url(JSON.stringify({ s:survey.slug, k:survey.key, n:nonce(), a })));
+    renderAnswerQr(survey, toB64url(JSON.stringify({ s:survey.slug, k:survey.key, n:nonce(), a, ...(survey.consent ? { c:1 } : {}) })));
   });
 }
 
