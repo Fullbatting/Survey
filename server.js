@@ -92,18 +92,16 @@ function requireAdmin(req, res) {
 function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     // Keep raw chunks and decode once: decoding chunk by chunk breaks multi-byte characters (e.g. Korean) split across chunks.
+    // Past the limit the rest is read and discarded instead of dropping the connection, so the client still gets the error.
     const chunks = [];
     let size = 0;
     req.on("data", chunk => {
       size += chunk.length;
-      if (size > limit) {
-        reject(new HttpError(400, "요청 본문이 너무 큽니다."));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
+      if (size <= limit) chunks.push(chunk);
+      else chunks.length = 0;
     });
     req.on("end", () => {
+      if (size > limit) return reject(new HttpError(413, "요청 본문이 너무 큽니다."));
       if (!size) return resolve({});
       try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
       catch { reject(new HttpError(400, "JSON 형식이 올바르지 않습니다.")); }
