@@ -15,6 +15,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "change-this-password";
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const QUESTION_TYPES = ["text", "textarea", "radio", "checkbox", "select", "rating"];
 const CHOICE_TYPES = ["radio", "checkbox", "select"];
 const FORM_NOT_FOUND = "설문을 찾을 수 없습니다.";
@@ -88,19 +89,23 @@ function requireAdmin(req, res) {
   return true;
 }
 
-function readBody(req, limit = 1024 * 1024) {
+function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
-    let data = "";
+    // Keep raw chunks and decode once: decoding chunk by chunk breaks multi-byte characters (e.g. Korean) split across chunks.
+    const chunks = [];
+    let size = 0;
     req.on("data", chunk => {
-      data += chunk;
-      if (Buffer.byteLength(data) > limit) {
+      size += chunk.length;
+      if (size > limit) {
         reject(new HttpError(400, "요청 본문이 너무 큽니다."));
         req.destroy();
+        return;
       }
+      chunks.push(chunk);
     });
     req.on("end", () => {
-      if (!data) return resolve({});
-      try { resolve(JSON.parse(data)); }
+      if (!size) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
       catch { reject(new HttpError(400, "JSON 형식이 올바르지 않습니다.")); }
     });
     req.on("error", reject);
@@ -316,7 +321,7 @@ function getPublicForm(req, res, slug) {
 }
 
 async function submitResponse(req, res, slug) {
-  const body = await readBody(req, 1024 * 1024);
+  const body = await readBody(req);
   const db = readDb();
   const form = openFormBySlug(db, slug);
   const error = validateAnswers(form, body.answers);
