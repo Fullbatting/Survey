@@ -79,6 +79,10 @@ textarea{min-height:84px;resize:vertical}
 .public-question{margin-bottom:20px}
 .public-question label.title{display:block;font-weight:800;margin-bottom:12px;line-height:1.5}
 .form-note{margin:14px 0 0}
+.consent-box{background:#f4f6fb;border:1px solid #dce2ee;border-radius:12px;padding:16px;margin-bottom:22px}
+.consent-box strong{display:block;margin-bottom:6px}
+.consent-box p{margin:0 0 12px;font-size:14px;line-height:1.7;white-space:pre-wrap}
+.consent-box .choice{margin:0;background:#fff}
 .required{color:#d94a4a;margin-left:4px}
 .choice{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border:1px solid #e7eaf2;border-radius:10px;margin-bottom:8px;font-size:14px}
 .choice input{margin-top:3px}
@@ -268,7 +272,7 @@ textarea{min-height:84px;resize:vertical}
 }
 
 /* Share modes */
-.seg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:4px;margin-bottom:16px;background:#f4f6fb;border-radius:12px}
+.seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;margin-bottom:16px;background:#f4f6fb;border-radius:12px}
 .seg button{min-height:40px;border:0;border-radius:9px;background:transparent;color:#5f6b85;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
 .seg button[aria-selected="true"]{background:#fff;color:#172033;box-shadow:0 1px 3px #17203326}
 .mode-desc{margin:0;line-height:1.6}
@@ -292,3 +296,32 @@ textarea{min-height:84px;resize:vertical}
 .answer-card h1{margin-bottom:6px}
 .answer-qr{max-width:360px;margin:18px auto}
 .answer-qr svg{display:block;width:100%;height:auto}
+
+/* Editor and print helpers */
+.field-hint{margin:0}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* Print sheet (A4, for the clinic room) */
+.print-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.print-actions select{width:auto;min-height:44px}
+.print-sheet{max-width:720px;margin:16px auto 0;background:#fff;border:1px solid #e5e9f2;border-radius:18px;padding:40px}
+.print-kicker{margin:0 0 6px;color:#5f6b85;font-size:14px;font-weight:700}
+.print-sheet h1{font-size:30px;margin-bottom:10px}
+.print-desc{margin:0 0 8px;color:#3e4963;line-height:1.7;white-space:pre-wrap}
+.print-steps{list-style:none;margin:24px 0 0;padding:0;display:grid;gap:20px}
+.print-step{display:flex;flex-wrap:wrap;align-items:center;gap:20px;border:2px solid #e5e9f2;border-radius:16px;padding:20px}
+.print-step>div{flex:1 1 240px}
+.print-step strong{display:block;font-size:20px;margin-bottom:6px}
+.print-step p{margin:0;font-size:15px;line-height:1.7;color:#2c3757}
+.print-qr{margin:0;line-height:0}
+@media print{
+  .topbar{display:none}
+  footer{display:none}
+  .no-print{display:none!important}
+  .toast{display:none}
+  :root{background:#fff}
+  .shell{max-width:none;margin:0;padding:0}
+  .print-sheet{max-width:none;margin:0;border:0;padding:0}
+  .print-step{break-inside:avoid}
+}
+@page{size:A4;margin:15mm}

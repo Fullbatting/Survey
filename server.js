@@ -13,13 +13,18 @@ const DB_FILE = path.join(DATA_DIR, "db.json");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "change-this-password";
+const DEFAULT_PASSWORD = "change-this-password";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || DEFAULT_PASSWORD;
+const WIFI_SSID = process.env.WIFI_SSID || "";
+const WIFI_PASSWORD = process.env.WIFI_PASSWORD || "";
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const QUESTION_TYPES = ["text", "textarea", "radio", "checkbox", "select", "rating"];
 const CHOICE_TYPES = ["radio", "checkbox", "select"];
 const FORM_NOT_FOUND = "설문을 찾을 수 없습니다.";
 const NOT_ACCEPTING = "현재 응답을 받지 않는 설문입니다.";
+const CONSENT_REQUIRED = "안내 내용에 동의해야 응답할 수 있습니다.";
+const ADMIN_PC_ONLY = "관리자 화면은 서버 PC에서만 사용할 수 있습니다.";
 const sessions = new Map();
 
 // Errors meant for the client: the message is sent as-is with this status.
@@ -28,6 +33,12 @@ class HttpError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+// The default password is published in the README, so refuse to run with it.
+if (ADMIN_PASSWORD === DEFAULT_PASSWORD) {
+  console.error("Set ADMIN_PASSWORD first: open runserver.bat in Notepad, change ADMIN_PASSWORD, save, and run it again.");
+  process.exit(1);
 }
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -144,14 +155,15 @@ function validateAnswers(form, answers) {
   return null;
 }
 
-// Changes whenever answers would map differently (question ids, types, options), so an offline answer QR
-// made from an older version of the survey is rejected instead of being stored against the wrong questions.
+// Changes whenever answers would map differently (question ids, types, options) or the consent notice changes,
+// so an offline answer QR made from an older version of the survey is rejected instead of being stored wrongly.
 function questionKey(form) {
-  return crypto.createHash("sha256").update(JSON.stringify(form.questions.map(q => [q.id, q.type, q.options]))).digest("base64url").slice(0, 8);
+  const questions = form.questions.map(q => [q.id, q.type, q.options]);
+  return crypto.createHash("sha256").update(JSON.stringify(form.consent ? [questions, form.consent] : questions)).digest("base64url").slice(0, 8);
 }
 
 function publicForm(form) {
-  return { id: form.id, slug: form.slug, title: form.title, description: form.description, questions: form.questions, questionKey: questionKey(form), status: form.status, createdAt: form.createdAt, updatedAt: form.updatedAt };
+  return { id: form.id, slug: form.slug, title: form.title, description: form.description, consent: form.consent || "", questions: form.questions, questionKey: questionKey(form), status: form.status, createdAt: form.createdAt, updatedAt: form.updatedAt };
 }
 
 const nowIso = () => new Date().toISOString();
@@ -208,11 +220,17 @@ function lanAddress() {
 function shareInfo() {
   const host = ["0.0.0.0", "::"].includes(HOST) ? lanAddress() : HOST;
   const localOnly = !host || ["127.0.0.1", "localhost", "::1"].includes(host);
-  return { baseUrl: `http://${localOnly ? "127.0.0.1" : host}:${PORT}`, localOnly };
+  return { baseUrl: `http://${localOnly ? "127.0.0.1" : host}:${PORT}`, localOnly, wifi: WIFI_SSID ? { ssid: WIFI_SSID, password: WIFI_PASSWORD } : null };
+}
+
+// Admin screens are for the server PC only: the request must come from loopback or one of this PC's own addresses.
+function isFromServerPc(req) {
+  const ip = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  return ip === "127.0.0.1" || ip === "::1" || Object.values(os.networkInterfaces()).flat().some(a => a?.address === ip);
 }
 
 function serveStatic(req, res, pathname) {
-  const mapped = pathname === "/" || /^\/(f|edit|results)\/[a-f0-9-]+$/.test(pathname) ? "/index.html" : pathname;
+  const mapped = pathname === "/" || /^\/(f|edit|results|print)\/[a-f0-9-]+$/.test(pathname) ? "/index.html" : pathname;
   const file = path.resolve(PUBLIC_DIR, "." + decodeURIComponent(mapped));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return sendText(res, 403, "Forbidden");
   fs.readFile(file, (err, data) => {
@@ -252,8 +270,9 @@ function logout(req, res) {
 }
 
 function sessionInfo(req, res) {
-  const session = getSession(req);
-  send(res, 200, { authenticated: Boolean(session), username: session?.user || null, share: session ? shareInfo() : null });
+  const adminAllowed = isFromServerPc(req);
+  const session = adminAllowed ? getSession(req) : null;
+  send(res, 200, { authenticated: Boolean(session), adminAllowed, username: session?.user || null, share: session ? shareInfo() : null });
 }
 
 function listForms(req, res) {
@@ -267,7 +286,7 @@ async function createForm(req, res) {
   if (!title) throw new HttpError(400, "설문 제목을 입력해 주세요.");
   const db = readDb();
   const now = nowIso();
-  const form = { id: crypto.randomUUID(), slug: crypto.randomBytes(8).toString("hex"), title, description: cleanString(body.description, 2000), questions: normalizeQuestions(body.questions), status: "draft", createdAt: now, updatedAt: now };
+  const form = { id: crypto.randomUUID(), slug: crypto.randomBytes(8).toString("hex"), title, description: cleanString(body.description, 2000), consent: cleanString(body.consent, 2000), questions: normalizeQuestions(body.questions), status: "draft", createdAt: now, updatedAt: now };
   db.forms.unshift(form);
   writeDb(db);
   send(res, 201, { form: publicForm(form) });
@@ -281,6 +300,7 @@ async function updateForm(req, res, id) {
   const locked = db.responses.some(r => r.formId === form.id);
   form.title = cleanString(body.title, 200) || form.title;
   form.description = cleanString(body.description, 2000);
+  form.consent = cleanString(body.consent, 2000);
   if (!locked) form.questions = normalizeQuestions(body.questions);
   form.updatedAt = nowIso();
   writeDb(db);
@@ -306,6 +326,20 @@ function getResults(req, res, id) {
   send(res, 200, { form: publicForm(form), total: responses.length, responses });
 }
 
+async function deleteResponses(req, res, id) {
+  const body = await readBody(req, 10000);
+  // `before` is a calendar date on the server PC: responses submitted before that day's midnight are removed.
+  const cutoff = body.all === true ? Infinity : /^\d{4}-\d{2}-\d{2}$/.test(body.before) ? new Date(`${body.before}T00:00:00`).getTime() : NaN;
+  if (Number.isNaN(cutoff)) throw new HttpError(400, "삭제할 범위를 선택해 주세요.");
+  const db = readDb();
+  const form = formById(db, id);
+  const kept = db.responses.filter(r => r.formId !== form.id || new Date(r.submittedAt).getTime() >= cutoff);
+  const deleted = db.responses.length - kept.length;
+  db.responses = kept;
+  writeDb(db);
+  send(res, 200, { ok: true, deleted, total: countResponses(db, form.id) });
+}
+
 function deleteForm(req, res, id) {
   const db = readDb();
   db.forms = db.forms.filter(f => f.id !== id);
@@ -322,9 +356,10 @@ async function submitResponse(req, res, slug) {
   const body = await readBody(req);
   const db = readDb();
   const form = openFormBySlug(db, slug);
+  if (form.consent && body.consent !== true) throw new HttpError(400, CONSENT_REQUIRED);
   const error = validateAnswers(form, body.answers);
   if (error) throw new HttpError(400, error);
-  db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: nowIso(), answers: body.answers });
+  db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: nowIso(), answers: body.answers, ...(form.consent ? { consented: true } : {}) });
   writeDb(db);
   send(res, 201, { ok: true, message: "응답이 제출되었습니다." });
 }
@@ -339,10 +374,11 @@ async function saveOfflineResponse(req, res) {
   const form = openFormBySlug(db, data.s);
   if (data.k !== questionKey(form) || data.a.length !== form.questions.length) throw new HttpError(409, "설문 문항이 바뀌어 이 응답 QR은 저장할 수 없습니다. 새 오프라인 QR을 비치해 주세요.");
   if (db.responses.some(r => r.formId === form.id && r.offlineNonce === nonce)) throw new HttpError(409, "이미 저장된 응답입니다.");
+  if (form.consent && data.c !== 1) throw new HttpError(400, CONSENT_REQUIRED);
   const answers = offlineAnswers(form, data.a);
   const error = answers ? validateAnswers(form, answers) : "응답 QR의 답변 형식이 올바르지 않습니다.";
   if (error) throw new HttpError(400, error);
-  db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: nowIso(), answers, source: "qr", offlineNonce: nonce });
+  db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: nowIso(), answers, source: "qr", offlineNonce: nonce, ...(form.consent ? { consented: true } : {}) });
   writeDb(db);
   send(res, 201, { ok: true, formId: form.id, formTitle: form.title, total: countResponses(db, form.id) });
 }
@@ -360,6 +396,7 @@ const routes = [
   ["DELETE", new RegExp(`^/api/admin/forms/${FORM_ID}$`), deleteForm],
   ["POST", new RegExp(`^/api/admin/forms/${FORM_ID}/status$`), setStatus],
   ["GET", new RegExp(`^/api/admin/forms/${FORM_ID}/results$`), getResults],
+  ["POST", new RegExp(`^/api/admin/forms/${FORM_ID}/responses/delete$`), deleteResponses],
   ["GET", /^\/api\/public\/forms\/([a-f0-9]+)$/, getPublicForm],
   ["POST", /^\/api\/public\/forms\/([a-f0-9]+)$/, submitResponse]
 ];
@@ -377,6 +414,7 @@ function findRoute(method, pathname) {
 const server = http.createServer(async (req, res) => {
   const { pathname } = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
+    if ((pathname === "/api/login" || pathname.startsWith("/api/admin/")) && !isFromServerPc(req)) throw new HttpError(403, ADMIN_PC_ONLY);
     if (pathname.startsWith("/api/admin/") && !requireAdmin(req, res)) return;
     const route = findRoute(req.method || "GET", pathname);
     if (route) return await route.handler(req, res, route.param);
@@ -392,8 +430,5 @@ server.listen(PORT, HOST, () => {
   console.log(`Survey MVP running at http://${HOST}:${PORT}`);
   const share = shareInfo();
   console.log(share.localOnly ? "Survey links work on this PC only. Set HOST=0.0.0.0 to share on your network." : `Survey links use ${share.baseUrl}`);
-  console.log(`Admin username: ${ADMIN_USER}`);
-  if (ADMIN_PASSWORD === "change-this-password") {
-    console.warn("WARNING: Set ADMIN_PASSWORD before using this app beyond local testing.");
-  }
+  console.log(`Admin username: ${ADMIN_USER} (admin screens open on this PC only)`);
 });

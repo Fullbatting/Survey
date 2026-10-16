@@ -28,13 +28,16 @@ function qrSvg(text, { size, label = "공개 링크 QR 코드", level = "M", mar
 // Offline survey link: the survey travels in the URL fragment (never sent to a server),
 // as base64url JSON with short keys to keep the printed QR small.
 function encodeOfflineSurvey(form) {
-  return toB64url(JSON.stringify({ s:form.slug, k:form.questionKey, t:form.title, d:form.description || "", q:form.questions.map(q => ({ t:q.title, y:q.type, r:q.required ? 1 : 0, o:CHOICE_TYPES.includes(q.type) ? q.options : undefined })) }));
+  return toB64url(JSON.stringify({ s:form.slug, k:form.questionKey, t:form.title, d:form.description || "", q:form.questions.map(q => ({ t:q.title, y:q.type, r:q.required ? 1 : 0, o:CHOICE_TYPES.includes(q.type) ? q.options : undefined })), c:form.consent || undefined }));
 }
 function decodeOfflineSurvey(fragment) {
   const s = JSON.parse(fromB64url(fragment));
   if (!s || !Array.isArray(s.q)) throw new Error("invalid survey");
-  return { slug:s.s, key:s.k, title:s.t, description:s.d, questions:s.q.map(q => ({ title:q.t, type:q.y, required:Boolean(q.r), options:q.o || [] })) };
+  return { slug:s.s, key:s.k, title:s.t, description:s.d, consent:s.c || "", questions:s.q.map(q => ({ title:q.t, type:q.y, required:Boolean(q.r), options:q.o || [] })) };
 }
+
+// Consent notice shown above the questions; its required checkbox blocks submitting without agreeing.
+const consentHtml = (text) => text ? `<div class="consent-box"><strong>응답 전 확인해 주세요</strong><p>${esc(text)}</p><label class="choice"><input type="checkbox" name="__consent" required><span>위 내용을 확인했으며 동의합니다.</span></label></div>` : "";
 
 // Respondent-facing question fields. `name`/`value` let the offline page post option indexes instead of option text.
 function questionFieldsHtml(questions, { name = (q) => q.id, value = (o) => o, maxText = 5000, showLimit = false } = {}) {
