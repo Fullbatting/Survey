@@ -4,6 +4,7 @@
 
 - npm packages: none
 - Third-party frontend JavaScript: `qrcode-generator` 2.0.4 (MIT), vendored as `public/vendor/qrcode.js`
+- Third-party frontend JavaScript: `jsQR` 1.4.0 (Apache-2.0), vendored as `public/vendor/jsQR.js`
 - Third-party CSS: none
 - External fonts/assets: none
 
@@ -38,6 +39,12 @@ SOFTWARE.
 ```
 
 The word "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
+
+## jsQR 1.4.0
+
+Source: https://github.com/cozmo/jsQR (npm `jsqr@1.4.0`, file `dist/jsQR.js`, unmodified). Used to read answer QR codes from the camera or an image on the admin PC.
+
+Licensed under the Apache License, Version 2.0. The full license text is in `licenses/jsQR-LICENSE.txt`. The package ships no NOTICE file.
 
 ## License policy
 

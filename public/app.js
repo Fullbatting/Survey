@@ -21,6 +21,9 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const isEmpty = (v) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
 const answerText = (v) => Array.isArray(v) ? v.join(", ") : String(v ?? "");
 const formLink = (slug) => `${share.baseUrl}/f/${slug}`;
+const toB64url = (str) => btoa(Array.from(new TextEncoder().encode(str), b => String.fromCharCode(b)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// The offline page reads the survey from the URL fragment, which browsers never send to a server.
+const offlineLink = (form) => `${share.baseUrl}/offline.html#${toB64url(JSON.stringify({ s:form.slug, k:form.questionKey, t:form.title, d:form.description || "", q:form.questions.map(q => ({ t:q.title, y:q.type, r:q.required ? 1 : 0, o:CHOICE_TYPES.includes(q.type) ? q.options : undefined })) }))}`;
 const TYPE_LABELS = { text:"단답형", textarea:"장문형", radio:"객관식", checkbox:"복수 선택", select:"드롭다운", rating:"점수형" };
 const TYPE_OPTIONS = { text:"단답형", textarea:"장문형", radio:"객관식 (하나 선택)", checkbox:"복수 선택", select:"드롭다운", rating:"점수형 (1~5)" };
 const CHOICE_TYPES = ["radio", "checkbox", "select"];
@@ -107,54 +110,68 @@ function qrSvg(text, size, label = "공개 링크 QR 코드") {
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c} ${r}h1v1h-1z`;
   return `<svg role="img" aria-label="${esc(label)}" width="${size}" height="${size}" viewBox="-2 -2 ${n + 4} ${n + 4}" shape-rendering="crispEdges"><rect x="-2" y="-2" width="${n + 4}" height="${n + 4}" fill="#fff"/><path fill="#101a32" d="${d}"/></svg>`;
 }
-function downloadQr(form) {
-  const qr = makeQr(formLink(form.slug)), n = qr.getModuleCount(), cell = 10, margin = cell * 4;
+function downloadQr(text, name) {
+  const qr = makeQr(text), n = qr.getModuleCount(), cell = 10, margin = cell * 4;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = n * cell + margin * 2;
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = "#000";
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) ctx.fillRect(margin + c * cell, margin + r * cell, cell, cell);
-  const a = document.createElement("a"); a.href = canvas.toDataURL("image/png"); a.download = `survey-qr-${form.slug}.png`; a.click();
+  const a = document.createElement("a"); a.href = canvas.toDataURL("image/png"); a.download = `${name}.png`; a.click();
 }
-async function copyLink(slug) {
-  const link = formLink(slug);
-  try { await navigator.clipboard.writeText(link); toast("공개 링크를 복사했습니다."); }
-  catch { prompt("설문 공개 링크를 복사하세요:", link); }
+async function copyText(link) {
+  try { await navigator.clipboard.writeText(link); toast("링크를 복사했습니다."); }
+  catch { prompt("설문 링크를 복사하세요:", link); }
 }
 const LOCAL_ONLY_TEXT = "이 PC에서만 열리는 주소입니다. 휴대폰 등 다른 기기에서 열려면 runserver.bat의 HOST를 0.0.0.0으로 바꾼 뒤 다시 실행하세요.";
 function shareBanner() {
   if (share.localOnly) return `<div class="share-banner warn">${ICON.info}<span>${LOCAL_ONLY_TEXT}</span></div>`;
   return `<div class="share-banner">${ICON.wifi}<span><strong>공유 주소</strong> ${esc(share.baseUrl)}</span><span class="muted">같은 Wi-Fi의 휴대폰·PC에서 링크와 QR로 접속할 수 있습니다.</span></div>`;
 }
-function shareBody(form) {
-  const link = formLink(form.slug);
-  const status = form.status === "draft" ? `<div class="notice">${ICON.info}<span>아직 <strong>작성 중</strong> 상태입니다. 질문을 구성하고 게시하면 이 링크·QR로 응답을 받을 수 있습니다.</span></div>`
+const SHARE_MODES = {
+  link: { label:"링크 QR", title:"공개 링크", link:(f) => formLink(f.slug), file:"survey-qr", desc:"같은 Wi-Fi의 휴대폰에서 설문이 열리고, 응답이 서버에 바로 저장됩니다." },
+  offline: { label:"오프라인 QR", title:"오프라인 설문 링크", link:offlineLink, file:"survey-offline-qr", desc:"응답을 마치면 휴대폰에 응답 QR이 표시됩니다. 접수처에서 [응답 QR 스캔]으로 읽어 저장하며, 응답은 네트워크로 전송되지 않습니다. 프로토타입에서는 설문 페이지를 이 서버가 제공하므로 같은 Wi-Fi가 필요합니다(offline.html을 정적 호스팅에 올리면 LTE에서도 열림)." }
+};
+function drawShare(root, form, mode = "link", { notices = true } = {}) {
+  const m = SHARE_MODES[mode], link = m.link(form);
+  const status = !notices ? "" : form.status === "draft" ? `<div class="notice">${ICON.info}<span>아직 <strong>작성 중</strong> 상태입니다. 질문을 구성하고 게시하면 이 링크·QR로 응답을 받을 수 있습니다.</span></div>`
     : form.status === "closed" ? `<div class="notice">${ICON.info}<span>응답이 종료된 설문입니다. 다시 게시하면 응답을 받을 수 있습니다.</span></div>` : "";
-  return `<div class="share-body"><figure class="qr-box">${qrSvg(link, 188, `${form.title} 공개 링크 QR 코드`)}</figure><div class="share-side"><span class="label">공개 링크</span><div class="link-box">${esc(link)}</div><div class="btn-pair"><button type="button" class="btn secondary" data-act="copy">${ICON.copy}링크 복사</button><button type="button" class="btn secondary" data-act="qr">${ICON.download}QR 이미지 저장</button></div>${status}${share.localOnly ? `<div class="notice">${ICON.info}<span>${LOCAL_ONLY_TEXT}</span></div>` : ""}</div></div>`;
-}
-function bindShare(root, form) {
-  root.querySelector('[data-act="copy"]').addEventListener("click", () => copyLink(form.slug));
-  root.querySelector('[data-act="qr"]').addEventListener("click", () => downloadQr(form));
+  root.innerHTML = `<div class="seg" role="tablist">${Object.entries(SHARE_MODES).map(([k, v]) => `<button type="button" role="tab" data-mode="${k}" aria-selected="${k === mode}">${v.label}</button>`).join("")}</div>
+  <div class="share-body"><figure class="qr-box">${qrSvg(link, 188, `${form.title} ${m.label} 코드`)}</figure><div class="share-side"><span class="label">${m.title}</span><div class="link-box${mode === "offline" ? " clamp" : ""}">${esc(link)}</div><div class="btn-pair"><button type="button" class="btn secondary" data-act="copy">${ICON.copy}링크 복사</button><button type="button" class="btn secondary" data-act="qr">${ICON.download}QR 이미지 저장</button></div><p class="muted small mode-desc">${m.desc}</p>${status}${share.localOnly ? `<div class="notice">${ICON.info}<span>${LOCAL_ONLY_TEXT}</span></div>` : ""}</div></div>`;
+  root.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => {
+    drawShare(root, form, b.dataset.mode, { notices });
+    root.querySelector(`[data-mode="${b.dataset.mode}"]`).focus();
+  }));
+  root.querySelector('[data-act="copy"]').addEventListener("click", () => copyText(link));
+  root.querySelector('[data-act="qr"]').addEventListener("click", () => downloadQr(link, `${m.file}-${form.slug}`));
 }
 
 // ---------- modal ----------
-function openModal(html, wide = false) {
+function openModal(html, wide = false, onClose = null) {
   closeModal();
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `<section class="modal${wide ? " wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section>`;
   backdrop.addEventListener("click", e => { if (e.target === backdrop || e.target.closest("[data-close]")) closeModal(); });
-  backdrop.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+  // On the document, not the backdrop: re-rendered modal content can drop focus to <body>.
+  const onKey = e => { if (e.key === "Escape") closeModal(); };
+  document.addEventListener("keydown", onKey);
+  backdrop.onCloseModal = () => { document.removeEventListener("keydown", onKey); onClose?.(); };
   document.body.appendChild(backdrop);
-  (backdrop.querySelector("input") || backdrop.querySelector("button"))?.focus();
+  (backdrop.querySelector("input:not([hidden])") || backdrop.querySelector("button"))?.focus();
   return backdrop;
 }
-function closeModal() { document.querySelector(".modal-backdrop")?.remove(); }
+function closeModal() {
+  const backdrop = document.querySelector(".modal-backdrop");
+  if (!backdrop) return;
+  backdrop.remove();
+  backdrop.onCloseModal?.();
+}
 const modalHead = (title) => `<div class="modal-head"><h2 id="modal-title">${title}</h2><button type="button" class="icon-btn" data-close aria-label="닫기">${ICON.close}</button></div>`;
 
 function openShareModal(form) {
-  const m = openModal(modalHead(esc(form.title)) + shareBody(form), true);
-  bindShare(m, form);
+  const m = openModal(modalHead(esc(form.title)) + '<div data-share></div>', true);
+  drawShare(m.querySelector("[data-share]"), form);
 }
 function openCreateModal() {
   const m = openModal(`<form id="create-form">${modalHead("새 설문 만들기")}
@@ -177,10 +194,65 @@ function openCreateModal() {
 }
 function openCreatedModal(form) {
   const m = openModal(`<div class="modal-head"><div class="done-title"><span class="done-icon">${ICON.check}</span><h2 id="modal-title">설문이 만들어졌습니다</h2></div></div>
-  <p class="modal-sub">${esc(form.title)} · 전용 링크와 QR 코드가 발급되었습니다.</p>${shareBody(form)}
+  <p class="modal-sub">${esc(form.title)} · 전용 링크와 QR 코드가 발급되었습니다.</p><div data-share></div>
   <div class="modal-actions bordered"><button type="button" class="btn secondary" data-close>대시보드로</button><button type="button" class="btn" data-act="edit">질문 편집하기</button></div>`, true);
-  bindShare(m, form);
+  drawShare(m.querySelector("[data-share]"), form);
   m.querySelector('[data-act="edit"]').addEventListener("click", () => navigate(`/edit/${form.id}`));
+}
+
+function openScanModal() {
+  let stream = null, last = "", busy = false, saved = 0;
+  const m = openModal(`${modalHead("응답 QR 스캔")}
+  <p class="muted small">환자 휴대폰에 표시된 응답 QR을 카메라에 비춰 주세요. 저장되면 바로 다음 응답을 스캔할 수 있습니다.</p>
+  <div class="scan-box"><video id="scan-video" playsinline muted></video><p class="scan-msg" id="scan-msg">카메라를 켜는 중…</p></div>
+  <div class="scan-result" id="scan-result" role="status"></div>
+  <div class="scan-alt"><button type="button" class="btn secondary" id="scan-file-btn">${ICON.qr}이미지 파일에서 읽기</button><input type="file" id="scan-file" accept="image/*" hidden></div>
+  <form class="scan-text" id="scan-text-form"><label for="scan-text" class="label">QR 스캐너·직접 입력</label><div class="scan-text-row"><input class="input" id="scan-text" autocomplete="off" placeholder="응답 코드"><button class="btn">저장</button></div></form>`, true,
+  () => { stream?.getTracks().forEach(t => t.stop()); if (saved) render(); });
+  const video = m.querySelector("#scan-video"), msg = m.querySelector("#scan-msg"), result = m.querySelector("#scan-result");
+  const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d", { willReadFrequently:true });
+  const decode = (src, w, h) => { canvas.width = w; canvas.height = h; ctx.drawImage(src, 0, 0, w, h); return jsQR(ctx.getImageData(0, 0, w, h).data, w, h)?.data || null; };
+  const show = (ok, text) => { result.className = `scan-result ${ok ? "ok" : "err"}`; result.textContent = text; };
+  async function submit(payload) {
+    payload = payload.trim();
+    if (!payload || payload === last) return; // the same QR stays in front of the camera after it is saved
+    last = payload; busy = true;
+    try {
+      const r = await api("/api/admin/offline-responses", { method:"POST", body:JSON.stringify({ payload }) });
+      saved++; show(true, `저장했습니다: ${r.formTitle} (응답 ${r.total}건)`);
+    } catch (err) { show(false, err.message); }
+    busy = false;
+  }
+  m.querySelector("#scan-file-btn").addEventListener("click", () => m.querySelector("#scan-file").click());
+  m.querySelector("#scan-file").addEventListener("change", async e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    let img;
+    try { img = await createImageBitmap(file); } catch { show(false, "이미지 파일을 열 수 없습니다."); return; }
+    const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const data = decode(img, Math.round(img.width * scale), Math.round(img.height * scale));
+    if (data) { last = ""; submit(data); } else show(false, "이미지에서 QR 코드를 찾지 못했습니다.");
+  });
+  m.querySelector("#scan-text-form").addEventListener("submit", e => {
+    e.preventDefault();
+    const input = m.querySelector("#scan-text");
+    last = ""; submit(input.value); input.value = "";
+  });
+  // Browsers allow the camera only on secure origins; http://127.0.0.1 on the server PC counts as one.
+  if (!navigator.mediaDevices?.getUserMedia) { msg.textContent = `카메라는 서버 PC에서 http://127.0.0.1:${location.port || 80} 으로 접속했을 때 사용할 수 있습니다. 아래 이미지 파일이나 직접 입력을 이용하세요.`; return; }
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" }, audio:false }).then(s => {
+    stream = s;
+    if (!m.isConnected) { s.getTracks().forEach(t => t.stop()); return; }
+    video.srcObject = s; video.play().catch(() => {});
+    msg.textContent = "응답 QR을 카메라에 비춰 주세요.";
+    const tick = () => {
+      if (!m.isConnected) return;
+      if (!busy && video.readyState >= 2) { const data = decode(video, video.videoWidth, video.videoHeight); if (data) submit(data); }
+      setTimeout(tick, 250);
+    };
+    tick();
+  }).catch(() => { msg.textContent = "카메라를 사용할 수 없습니다. 카메라 연결과 브라우저 권한을 확인하거나, 아래 이미지 파일이나 직접 입력을 이용하세요."; });
 }
 
 // ---------- dashboard ----------
@@ -198,16 +270,17 @@ function formCard(f) {
 async function renderDashboard() {
   const { forms } = await api("/api/admin/forms");
   const responses = forms.reduce((n,f)=>n+f.responseCount,0);
-  app.innerHTML = `<div class="page-head"><div><h1>설문 대시보드</h1><p>설문을 만들면 전용 공개 링크와 QR 코드가 함께 발급됩니다.</p></div><button class="btn" id="new-form">${ICON.plus}새 설문 만들기</button></div>
+  app.innerHTML = `<div class="page-head"><div><h1>설문 대시보드</h1><p>설문을 만들면 전용 공개 링크와 QR 코드가 함께 발급됩니다.</p></div><div class="top-actions"><button class="btn secondary" id="scan-btn">${ICON.qr}응답 QR 스캔</button><button class="btn" id="new-form">${ICON.plus}새 설문 만들기</button></div></div>
   ${shareBanner()}
   <div class="stats-grid"><div class="stat-card"><span>전체 설문</span><strong>${forms.length}</strong></div><div class="stat-card"><span>게시 중</span><strong>${forms.filter(f=>f.status==="published").length}</strong></div><div class="stat-card"><span>누적 응답</span><strong>${responses}</strong></div></div>
   <div class="toolbar"><h2>내 설문</h2><span class="muted small">${forms.length}개</span></div>
   <div class="form-list">${forms.length ? forms.map(formCard).join("") : `<div class="card empty"><strong>아직 만든 설문이 없습니다.</strong><p>첫 설문을 만들어 응답을 수집해 보세요.</p><button class="btn" id="empty-new">첫 설문 만들기</button></div>`}</div>`;
   const byId = Object.fromEntries(forms.map(f => [f.id, f]));
   document.getElementById("new-form").addEventListener("click", openCreateModal);
+  document.getElementById("scan-btn").addEventListener("click", openScanModal);
   document.getElementById("empty-new")?.addEventListener("click", openCreateModal);
   app.querySelectorAll("[data-qr]").forEach(el=>el.addEventListener("click",()=>openShareModal(byId[el.dataset.qr])));
-  app.querySelectorAll("[data-copy]").forEach(el=>el.addEventListener("click",()=>copyLink(el.dataset.copy)));
+  app.querySelectorAll("[data-copy]").forEach(el=>el.addEventListener("click",()=>copyText(formLink(el.dataset.copy))));
   app.querySelectorAll("[data-edit]").forEach(el=>el.addEventListener("click",()=>navigate(`/edit/${el.dataset.edit}`)));
   app.querySelectorAll("[data-results]").forEach(el=>el.addEventListener("click",()=>navigate(`/results/${el.dataset.results}`)));
   app.querySelectorAll("[data-delete]").forEach(el=>el.addEventListener("click",async()=>{
@@ -227,21 +300,19 @@ async function renderEditor(id) {
 function drawEditor() {
   const { form } = editor;
   const locked = form.responseCount > 0;
-  const link = formLink(form.slug);
-  const shareNote = share.localOnly ? LOCAL_ONLY_TEXT : `공유 주소 ${esc(new URL(share.baseUrl).host)} 기준입니다. 같은 Wi-Fi에서만 열립니다.`;
   const publishLabel = form.status === "closed" ? "저장하고 다시 게시하기" : "저장하고 게시하기";
   app.innerHTML = `<a href="/" class="back-link" data-nav>${ICON.back}대시보드</a>
   <div class="page-head"><div class="title-row"><h1>${esc(form.title)}</h1>${statusChip(form.status)}<span class="dirty${editor.dirty ? "" : " hidden"}" id="dirty">저장되지 않은 변경사항</span></div><div class="top-actions"><button class="btn secondary" id="preview-btn">미리보기</button><button class="btn" id="save-btn">저장</button></div></div>
   <div class="tabs" role="tablist"><button role="tab" data-tab="edit" aria-selected="${editor.tab === "edit"}">질문 편집</button><button role="tab" data-tab="preview" aria-selected="${editor.tab === "preview"}">응답자 화면 미리보기</button></div>
   <div class="split"><div class="split-main" id="editor-main"></div>
   <aside class="split-side">
-  <section class="card"><h2>공유</h2><figure class="qr-box center">${qrSvg(link, 154)}</figure><div class="link-box">${esc(link)}</div><div class="btn-pair"><button type="button" class="btn secondary" data-act="copy">링크 복사</button><button type="button" class="btn secondary" data-act="qr">QR 저장</button></div><p class="muted small note">${shareNote}</p></section>
+  <section class="card"><h2>공유</h2><div id="editor-share"></div></section>
   <section class="card"><h2>게시 상태</h2><div class="status-line"><span class="muted small">현재</span>${statusChip(form.status)}</div>
   ${form.status === "published" ? `<p class="muted small note-top">게시 중입니다. 링크·QR로 응답을 받고 있습니다.</p><button class="btn secondary wide" id="close-form">응답 종료</button>` : `<button class="btn wide" id="publish">${publishLabel}</button><button class="btn secondary wide" disabled>응답 종료</button>`}
   <div class="notice">${locked ? `응답 ${form.responseCount}건이 접수되어 질문 구성이 잠겼습니다. 제목·설명은 수정할 수 있습니다.` : "응답이 1건이라도 접수되면 질문 구성이 잠깁니다. 제목·설명은 계속 수정할 수 있습니다."}</div></section>
   </aside></div>`;
   bindBackLink();
-  bindShare(app.querySelector(".split-side"), form);
+  drawShare(document.getElementById("editor-share"), form, "link", { notices:false });
   document.getElementById("preview-btn").addEventListener("click", () => setEditorTab("preview"));
   app.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click", () => setEditorTab(el.dataset.tab)));
   document.getElementById("save-btn").addEventListener("click", async () => { if (await saveEditor()) { toast("설문을 저장했습니다."); drawEditor(); } });
@@ -402,10 +473,11 @@ async function renderResults(id) {
 function drawResults() {
   const { data } = results, f = data.form;
   app.innerHTML = `<a href="/" class="back-link" data-nav>${ICON.back}대시보드</a>
-  <div class="page-head"><div class="title-row"><h1>${esc(f.title)}</h1>${statusChip(f.status)}</div><div class="top-actions"><button class="btn secondary" id="edit-form">설문 편집</button><button class="btn" id="export-csv">${ICON.download}CSV 내보내기</button></div></div>
+  <div class="page-head"><div class="title-row"><h1>${esc(f.title)}</h1>${statusChip(f.status)}</div><div class="top-actions"><button class="btn secondary" id="scan-btn">${ICON.qr}응답 QR 스캔</button><button class="btn secondary" id="edit-form">설문 편집</button><button class="btn" id="export-csv">${ICON.download}CSV 내보내기</button></div></div>
   <div class="tabs" role="tablist"><button role="tab" data-tab="summary" aria-selected="${results.tab === "summary"}">요약</button><button role="tab" data-tab="responses" aria-selected="${results.tab === "responses"}">개별 응답 <span class="tab-count">${data.total}</span></button></div>
   <div id="results-body"></div>`;
   bindBackLink();
+  document.getElementById("scan-btn").addEventListener("click", openScanModal);
   document.getElementById("edit-form").addEventListener("click", () => navigate(`/edit/${f.id}`));
   document.getElementById("export-csv").addEventListener("click", () => exportCsv(data));
   app.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click", () => setResultsTab(el.dataset.tab)));
@@ -489,10 +561,10 @@ function drawResponseList() {
   const pages = Math.ceil(list.length / PAGE_SIZE), start = results.page * PAGE_SIZE, slice = list.slice(start, start + PAGE_SIZE);
   const questions = results.data.form.questions;
   const summary = (r) => questions.map(q => r.answers[q.id]).filter(v => !isEmpty(v)).slice(0, 3).map(answerText).join(" · ");
-  items.innerHTML = `<ul class="resp-items">${slice.map(r => `<li><button type="button" class="resp-item" data-select="${r.id}" ${r.id === results.selectedId ? 'aria-current="true"' : ""}><strong>응답 ${r.no}</strong> <span class="muted small">· ${esc(fmtShort(r.submittedAt))}</span><span class="resp-summary">${esc(summary(r))}</span></button></li>`).join("")}</ul>
+  items.innerHTML = `<ul class="resp-items">${slice.map(r => `<li><button type="button" class="resp-item" data-select="${r.id}" ${r.id === results.selectedId ? 'aria-current="true"' : ""}><strong>응답 ${r.no}</strong> <span class="muted small">· ${esc(fmtShort(r.submittedAt))}${r.source === "qr" ? " · QR 전달" : ""}</span><span class="resp-summary">${esc(summary(r))}</span></button></li>`).join("")}</ul>
   <div class="pager"><span class="muted small">${start + 1}–${start + slice.length} / ${list.length}건</span><div class="pager-btns"><button type="button" class="icon-btn" data-page="-1" aria-label="이전 페이지" ${results.page === 0 ? "disabled" : ""}>${ICON.back}</button><button type="button" class="icon-btn" data-page="1" aria-label="다음 페이지" ${results.page >= pages - 1 ? "disabled" : ""}>${ICON.next}</button></div></div>`;
   const r = list[idx];
-  detail.innerHTML = `<div class="detail-head"><div><h2>응답 ${r.no}</h2><span class="muted small">${esc(fmtDate(r.submittedAt))} 제출</span></div><div class="pager-btns"><button type="button" class="btn secondary" data-step="-1" ${idx === 0 ? "disabled" : ""}>${ICON.back}이전</button><button type="button" class="btn secondary" data-step="1" ${idx === list.length - 1 ? "disabled" : ""}>다음${ICON.next}</button></div></div>
+  detail.innerHTML = `<div class="detail-head"><div><h2>응답 ${r.no}</h2><span class="muted small">${esc(fmtDate(r.submittedAt))} ${r.source === "qr" ? "응답 QR로 저장" : "링크로 제출"}</span></div><div class="pager-btns"><button type="button" class="btn secondary" data-step="-1" ${idx === 0 ? "disabled" : ""}>${ICON.back}이전</button><button type="button" class="btn secondary" data-step="1" ${idx === list.length - 1 ? "disabled" : ""}>다음${ICON.next}</button></div></div>
   <dl class="answer-dl">${questions.map((q, i) => `<div><dt>${i + 1}. ${esc(q.title)}</dt><dd>${answerHtml(q, r.answers[q.id])}</dd></div>`).join("")}</dl>`;
 }
 function exportCsv(data) {
