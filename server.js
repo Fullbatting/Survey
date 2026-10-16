@@ -129,8 +129,38 @@ function validateAnswers(form, answers) {
   return null;
 }
 
+// Changes whenever answers would map differently (question ids, types, options), so an offline answer QR
+// made from an older version of the survey is rejected instead of being stored against the wrong questions.
+function questionKey(form) {
+  return crypto.createHash("sha256").update(JSON.stringify(form.questions.map(q => [q.id, q.type, q.options]))).digest("base64url").slice(0, 8);
+}
+
 function publicForm(form) {
-  return { id: form.id, slug: form.slug, title: form.title, description: form.description, questions: form.questions, status: form.status, createdAt: form.createdAt, updatedAt: form.updatedAt };
+  return { id: form.id, slug: form.slug, title: form.title, description: form.description, questions: form.questions, questionKey: questionKey(form), status: form.status, createdAt: form.createdAt, updatedAt: form.updatedAt };
+}
+
+// Offline answer QR payload: base64url JSON { s: slug, k: questionKey, n: nonce, a: [answer per question] }.
+// Choice answers are option indexes; they are mapped back to option text here.
+function offlineAnswers(form, a) {
+  const answers = {};
+  for (const [i, q] of form.questions.entries()) {
+    const v = a[i];
+    const empty = v === null || v === undefined;
+    if (q.type === "checkbox") {
+      if (!empty && (!Array.isArray(v) || v.some(x => !Number.isInteger(x) || !q.options[x]))) return null;
+      answers[q.id] = empty ? [] : v.map(x => q.options[x]);
+    } else if (["radio", "select"].includes(q.type)) {
+      if (!empty && (!Number.isInteger(v) || !q.options[v])) return null;
+      answers[q.id] = empty ? "" : q.options[v];
+    } else if (q.type === "rating") {
+      if (!empty && ![1, 2, 3, 4, 5].includes(v)) return null;
+      answers[q.id] = empty ? "" : String(v);
+    } else {
+      if (!empty && typeof v !== "string") return null;
+      answers[q.id] = empty ? "" : v;
+    }
+  }
+  return answers;
 }
 
 function lanAddress() {
@@ -200,6 +230,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p.startsWith("/api/admin/") && !requireAdmin(req, res)) return;
+
+    if (method === "POST" && p === "/api/admin/offline-responses") {
+      const body = await readBody(req, 20000);
+      let data;
+      try { data = JSON.parse(Buffer.from(cleanString(body.payload, 12000), "base64url").toString("utf8")); } catch { data = null; }
+      if (!data || typeof data !== "object" || !Array.isArray(data.a) || !cleanString(data.n, 40)) return send(res, 400, { error: "응답 QR을 읽을 수 없습니다." });
+      const db = readDb();
+      const form = db.forms.find(f => f.slug === data.s);
+      if (!form) return send(res, 404, { error: "설문을 찾을 수 없습니다." });
+      if (form.status !== "published") return send(res, 410, { error: "현재 응답을 받지 않는 설문입니다." });
+      if (data.k !== questionKey(form) || data.a.length !== form.questions.length) return send(res, 409, { error: "설문 문항이 바뀌어 이 응답 QR은 저장할 수 없습니다. 새 오프라인 QR을 비치해 주세요." });
+      const nonce = cleanString(data.n, 40);
+      if (db.responses.some(r => r.formId === form.id && r.offlineNonce === nonce)) return send(res, 409, { error: "이미 저장된 응답입니다." });
+      const answers = offlineAnswers(form, data.a);
+      const error = answers ? validateAnswers(form, answers) : "응답 QR의 답변 형식이 올바르지 않습니다.";
+      if (error) return send(res, 400, { error });
+      db.responses.unshift({ id: crypto.randomUUID(), formId: form.id, submittedAt: new Date().toISOString(), answers, source: "qr", offlineNonce: nonce });
+      writeDb(db);
+      return send(res, 201, { ok: true, formId: form.id, formTitle: form.title, total: db.responses.filter(r => r.formId === form.id).length });
+    }
 
     if (method === "GET" && p === "/api/admin/forms") {
       const db = readDb();

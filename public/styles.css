@@ -26,13 +26,13 @@
 .choice-card input{margin:3px 0 0;width:18px;height:18px;accent-color:#4e65d8}.choice-card strong{display:block;font-size:14px}.choice-card small{font-size:12px;color:#5f6b85}
 .info-box{display:flex;gap:10px;align-items:flex-start;background:#f4f6fb;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.6;color:#2c3757}.info-box svg{color:#4e65d8;flex:0 0 auto;margin-top:3px}
 .share-body{display:flex;flex-wrap:wrap;gap:24px;align-items:center}.share-side{flex:1 1 280px;min-width:0;display:grid;gap:12px}.share-side .link-box,.share-side .notice{margin:0}
-.qr-box{margin:0;flex:0 0 auto;border:1px solid #e5e9f2;border-radius:14px;padding:10px;background:#fff;line-height:0}.qr-box.center{width:fit-content;margin:0 auto 14px}
+.qr-box{margin:0;flex:0 0 auto;border:1px solid #e5e9f2;border-radius:14px;padding:10px;background:#fff;line-height:0}
 .btn-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .tabs{display:flex;gap:4px;border-bottom:1px solid #dce2ee;margin-bottom:20px;overflow-x:auto}
 .tabs button{min-height:44px;padding:0 16px;border:0;border-bottom:3px solid transparent;background:transparent;color:#5f6b85;font:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap}.tabs button[aria-selected="true"]{border-bottom-color:#4e65d8;color:#172033}.tab-count{font-weight:500}
 .split{display:flex;flex-wrap:wrap;align-items:flex-start;gap:20px}.split-main{flex:999 1 520px;min-width:0;display:grid;gap:14px}.split-side{flex:1 1 300px;min-width:0;display:grid;gap:14px}.split-list{flex:1 1 340px;min-width:0}
 .split-side h2{font-size:16px;margin-bottom:14px}.split-main>.toolbar{margin:6px 0 0}
-.note{margin:10px 0 0;line-height:1.6}.note-top{margin:0 0 12px;line-height:1.6}.split-side .notice{margin:14px 0 0}
+.note-top{margin:0 0 12px;line-height:1.6}.split-side .notice{margin:14px 0 0}
 .status-line{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
 .dirty{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#8a4f0c}.dirty::before{content:"";width:8px;height:8px;border-radius:50%;background:#d9822b}
 .question-list{display:grid;gap:12px}.question-list .question-card{margin:0}.question-card.open{border:2px solid #4e65d8;padding:17px}
@@ -65,3 +65,11 @@
 .answer-dl{margin:0;display:grid;gap:18px}.answer-dl dt{font-size:13px;font-weight:700;color:#3e4963;margin-bottom:6px}.answer-dl dd{margin:0;font-size:15px;overflow-wrap:anywhere;white-space:pre-wrap}
 .chip{display:inline-block;border-radius:6px;padding:4px 10px;margin:0 6px 6px 0;font-size:13px;background:#edf0ff;color:#2f43b0}.answer-text{line-height:1.7;background:#f7f8fc;border-radius:10px;padding:12px 14px}
 @media(max-width:460px){.modal{padding:20px}.modal-sub{margin-left:0}.add-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.seg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:4px;margin-bottom:16px;background:#f4f6fb;border-radius:12px}
+.seg button{min-height:40px;border:0;border-radius:9px;background:transparent;color:#5f6b85;font:inherit;font-size:13px;font-weight:700;cursor:pointer}.seg button[aria-selected="true"]{background:#fff;color:#172033;box-shadow:0 1px 3px #17203326}
+.mode-desc{margin:0;line-height:1.6}.link-box.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.scan-box{margin-top:14px;background:#101a32;border-radius:14px;overflow:hidden}.scan-box video{display:block;width:100%;max-height:360px;object-fit:cover;background:#000}
+.scan-msg{margin:0;padding:10px 14px;color:#dfe5f2;font-size:13px;line-height:1.6}
+.scan-result{margin-top:12px;padding:12px 14px;border-radius:10px;font-size:14px;line-height:1.6}.scan-result:empty{display:none}.scan-result.ok{background:#e5f8ed;color:#146c40}.scan-result.err{background:#fff0f0;color:#a82a2a}
+.scan-alt{margin-top:12px}.scan-text{margin-top:14px;display:grid;gap:7px}.scan-text-row{display:flex;gap:8px}.scan-text-row .input{flex:1;min-width:0}
+.answer-card{text-align:center}.answer-card h1{margin-bottom:6px}.answer-qr{max-width:360px;margin:18px auto}.answer-qr svg{display:block;width:100%;height:auto}
