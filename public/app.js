@@ -41,7 +41,8 @@ const ICON = {
   search: icon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>', 2.2),
   check: icon('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 2.6),
   info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/>'),
-  qr: icon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v7h-7"/>')
+  qr: icon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v7h-7"/>'),
+  grip: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>'
 };
 
 async function api(url, method = "GET", body) {
@@ -316,6 +317,8 @@ function drawEditor() {
   const main = document.getElementById("editor-main");
   main.addEventListener("input", onEditorInput);
   main.addEventListener("click", onEditorClick);
+  main.addEventListener("keydown", onGripKeydown);
+  main.addEventListener("pointerdown", onGripPointerDown);
   drawEditorMain();
 }
 function setEditorTab(tab) {
@@ -346,24 +349,68 @@ function drawQuestions() {
 }
 function questionHtml(q, i, locked) {
   const req = q.required ? "필수" : "선택";
+  const grip = `<button type="button" class="q-grip" aria-label="질문 ${i + 1} 순서 변경: 드래그하거나 위·아래 방향키" ${locked ? "disabled" : ""}>${ICON.grip}</button>`;
   if (q.id !== editor.openId) {
     const meta = CHOICE_TYPES.includes(q.type) ? `선택지 ${q.options.length}개 · ${req}` : q.type === "rating" ? `1~5점 · ${req}` : req;
-    return `<button type="button" class="q-compact" data-open="${esc(q.id)}"><strong>질문 ${i + 1}</strong><span class="type-badge">${TYPE_LABELS[q.type]}</span><span class="q-compact-title">${esc(q.title)}</span><span class="muted small">${meta}</span></button>`;
+    return `<div class="q-compact" data-qid="${esc(q.id)}">${grip}<button type="button" class="q-open" data-open="${esc(q.id)}"><strong>질문 ${i + 1}</strong><span class="type-badge">${TYPE_LABELS[q.type]}</span><span class="q-compact-title">${esc(q.title)}</span><span class="muted small">${meta}</span></button></div>`;
   }
   const dis = locked ? "disabled" : "";
   const last = editor.questions.length - 1;
   const options = CHOICE_TYPES.includes(q.type) ? `<div class="option-list"><span class="label">선택지</span>${q.options.map((o, j) => `<div class="option-row"><span class="option-dot${q.type === "checkbox" ? " square" : ""}"></span><input class="input" aria-label="선택지 ${j + 1}" data-option="${j}" value="${esc(o)}" maxlength="200" ${dis}><button type="button" class="icon-btn ghost" data-remove-option="${j}" aria-label="선택지 ${j + 1} 삭제" ${dis}>${ICON.close}</button></div>`).join("")}${locked ? "" : `<button type="button" class="btn dashed" data-add-option>${ICON.plus}선택지 추가</button>`}</div>`
     : q.type === "rating" ? '<p class="muted small">응답자는 1~5점 중 하나를 선택합니다.</p>' : "";
-  return `<article class="question-card open" data-question="${esc(q.id)}">
-  <div class="question-head"><div class="q-label"><strong>질문 ${i + 1}</strong><span class="type-badge">${TYPE_LABELS[q.type]}</span></div>
+  return `<article class="question-card open" data-qid="${esc(q.id)}">
+  <div class="question-head"><div class="q-label">${grip}<strong>질문 ${i + 1}</strong><span class="type-badge">${TYPE_LABELS[q.type]}</span></div>
   <div class="icon-actions"><button type="button" class="icon-btn" data-move="-1" aria-label="위로 이동" ${locked || i === 0 ? "disabled" : ""}>${ICON.up}</button><button type="button" class="icon-btn" data-move="1" aria-label="아래로 이동" ${locked || i === last ? "disabled" : ""}>${ICON.down}</button><button type="button" class="icon-btn" data-dup aria-label="질문 복제" ${dis}>${ICON.copy}</button><button type="button" class="icon-btn danger" data-remove aria-label="질문 삭제" ${dis}>${ICON.trash}</button></div></div>
   <div class="field"><label for="q-title-${esc(q.id)}">질문 내용</label><input class="input" id="q-title-${esc(q.id)}" data-field="title" value="${esc(q.title)}" maxlength="300" ${dis}></div>
   <div class="q-row"><div class="field"><label for="q-type-${esc(q.id)}">질문 유형</label><select id="q-type-${esc(q.id)}" data-field="type" ${dis}>${Object.entries(TYPE_OPTIONS).map(([t, l]) => `<option value="${t}" ${q.type === t ? "selected" : ""}>${l}</option>`).join("")}</select></div><label class="check-pill"><input type="checkbox" data-field="required" ${q.required ? "checked" : ""} ${dis}>필수 질문</label></div>
   ${options}</article>`;
 }
 function questionOf(el) {
-  const id = el.closest("[data-question]")?.dataset.question;
+  const id = el.closest("[data-qid]")?.dataset.qid;
   return editor.questions.find(q => q.id === id);
+}
+function moveQuestion(id, to) {
+  const list = editor.questions, from = list.findIndex(q => q.id === id);
+  if (from < 0 || to < 0 || to >= list.length || to === from) return false;
+  list.splice(to, 0, list.splice(from, 1)[0]);
+  return true;
+}
+const focusGrip = (id) => document.querySelector(`#questions [data-qid="${CSS.escape(id)}"] .q-grip`)?.focus();
+function onGripKeydown(e) {
+  const grip = e.target.closest(".q-grip");
+  if (!grip || !["ArrowUp", "ArrowDown"].includes(e.key)) return;
+  e.preventDefault();
+  const q = questionOf(grip);
+  if (!moveQuestion(q.id, editor.questions.indexOf(q) + (e.key === "ArrowUp" ? -1 : 1))) return;
+  markDirty(); drawQuestions(); focusGrip(q.id);
+}
+// Pointer events rather than HTML5 drag and drop, which does not work with touch screens.
+function onGripPointerDown(e) {
+  const grip = e.target.closest(".q-grip");
+  if (!grip || grip.disabled || !e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return;
+  e.preventDefault();
+  const holder = document.getElementById("questions"), item = grip.closest("[data-qid]");
+  const items = () => [...holder.querySelectorAll(":scope > [data-qid]")];
+  holder.classList.add("sorting");
+  item.classList.add("dragging");
+  const move = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    if (ev.clientY < 60) window.scrollBy(0, -16); else if (ev.clientY > innerHeight - 60) window.scrollBy(0, 16);
+    const next = items().find(el => el !== item && ev.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2) || null;
+    if (next !== item.nextElementSibling) holder.insertBefore(item, next);
+  };
+  const end = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", end);
+    document.removeEventListener("pointercancel", end);
+    const id = item.dataset.qid;
+    if (ev.type === "pointerup" && moveQuestion(id, items().indexOf(item))) markDirty();
+    drawQuestions(); // also restores the list when the drag was cancelled
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", end);
+  document.addEventListener("pointercancel", end);
 }
 function markDirty() {
   editor.dirty = true;
@@ -404,7 +451,7 @@ function onEditorClick(e) {
   const q = questionOf(b);
   if (!q) return;
   const i = list.indexOf(q);
-  if (b.dataset.move) { const j = i + Number(b.dataset.move); [list[i], list[j]] = [list[j], list[i]]; }
+  if (b.dataset.move) moveQuestion(q.id, i + Number(b.dataset.move));
   else if (b.dataset.dup !== undefined) { const copy = { ...clone(q), id:uid() }; list.splice(i + 1, 0, copy); editor.openId = copy.id; }
   else if (b.dataset.remove !== undefined) { list.splice(i, 1); editor.openId = list[Math.min(i, list.length - 1)]?.id || null; }
   else if (b.dataset.removeOption !== undefined) q.options.splice(Number(b.dataset.removeOption), 1);
