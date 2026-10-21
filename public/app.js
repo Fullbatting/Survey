@@ -44,6 +44,9 @@ const ICON = {
   info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/>'),
   print: icon('<path d="M7 9V3h10v6M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="7" rx="1"/>'),
   qr: icon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v7h-7"/>'),
+  external: icon('<path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>', 2.2),
+  phone: icon('<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>', 2.2),
+  chart: icon('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', 2.2),
   grip: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>'
 };
 
@@ -87,8 +90,10 @@ async function render() {
     if (!session.authenticated) { setHeader(false); renderLogin(); return; }
     share = session.share || share;
     setHeader(true);
+    if (location.pathname === "/demo") { await renderDemo(); return; }
     const resultsId = getResultsId();
-    if (resultsId) { await renderResults(resultsId); return; }
+    // The demo results window is for reading each patient's intake answers, so it opens on the responses tab.
+    if (resultsId) { await renderResults(resultsId, window.name === "demo-results" ? { tab:"responses" } : {}); return; }
     const editId = getEditId();
     if (editId) { await renderEditor(editId); return; }
     const printId = getPrintId();
@@ -179,22 +184,37 @@ function openShareModal(form) {
   const m = openModal(modalHead(esc(form.title)) + '<div data-share></div>', true);
   drawShare(m.querySelector("[data-share]"), form);
 }
-function openCreateModal() {
+// Starting point for a pre-visit intake questionnaire: [title, type, required, options].
+const INTAKE_SAMPLE = {
+  consent:"진료 준비를 위해 문진 내용을 수집합니다. 입력한 내용은 담당 의료진이 진료 전에 확인합니다.",
+  questions:[
+    ["성함", "text", true],
+    ["생년월일 (예: 1990-01-01)", "text", true],
+    ["방문 구분", "radio", true, ["처음 방문 (초진)", "다시 방문 (재진)"]],
+    ["오늘 불편하신 증상을 적어 주세요.", "textarea", true],
+    ["증상이 언제부터 있었나요?", "select", false, ["오늘", "2~3일 전", "1주일 전", "1개월 이상"]],
+    ["불편한 정도를 골라 주세요. (1 가벼움 ~ 5 매우 심함)", "rating", false],
+    ["앓고 있는 질환이 있으면 모두 골라 주세요.", "checkbox", false, ["고혈압", "당뇨", "심장 질환", "천식·폐 질환", "없음"]],
+    ["현재 복용 중인 약이 있으면 적어 주세요.", "text", false],
+    ["약이나 음식 알레르기가 있으면 적어 주세요.", "text", false]
+  ]
+};
+function openCreateModal(onCreated = async (form) => { await renderDashboard(); openCreatedModal(form); }) {
   const m = openModal(`<form id="create-form">${modalHead("새 설문 만들기")}
-  <div class="field"><label for="c-title">설문 제목 <span class="required">*</span></label><input class="input" id="c-title" name="title" maxlength="200" placeholder="예: 고객 만족도 조사" required></div>
+  <div class="field"><label for="c-title">설문 제목 <span class="required">*</span></label><input class="input" id="c-title" name="title" maxlength="200" placeholder="예: 진료 전 문진" required></div>
   <div class="field"><label for="c-desc">설명 <span class="muted">(선택)</span></label><textarea id="c-desc" name="description" maxlength="2000" placeholder="응답자에게 보여줄 안내 문구"></textarea></div>
-  <fieldset class="choice-cards"><legend>시작 방식</legend><div class="choice-grid"><label class="choice-card"><input type="radio" name="start" value="blank" checked><span><strong>빈 설문</strong><small>질문 없이 시작</small></span></label><label class="choice-card"><input type="radio" name="start" value="sample"><span><strong>예시 질문 포함</strong><small>만족도 객관식 1개로 시작</small></span></label></div></fieldset>
+  <fieldset class="choice-cards"><legend>시작 방식</legend><div class="choice-grid"><label class="choice-card"><input type="radio" name="start" value="blank" checked><span><strong>빈 설문</strong><small>질문 없이 시작</small></span></label><label class="choice-card"><input type="radio" name="start" value="sample"><span><strong>진료 전 문진 예시</strong><small>성함·증상·복용 약 등 ${INTAKE_SAMPLE.questions.length}개 질문과 동의 안내로 시작</small></span></label></div></fieldset>
   <div class="info-box">${ICON.qr}<span>만들면 이 설문 전용 <strong>공개 링크</strong>와 <strong>QR 코드</strong>가 한 쌍으로 바로 발급됩니다.</span></div>
   <div class="modal-actions"><button type="button" class="btn secondary" data-close>취소</button><button type="submit" class="btn">설문 만들기</button></div></form>`);
   m.querySelector("#create-form").addEventListener("submit", async e => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget), btn = e.currentTarget.querySelector('[type="submit"]');
-    const questions = fd.get("start") === "sample" ? [{ id:uid(), title:"서비스에 얼마나 만족하시나요?", type:"radio", required:true, options:["매우 만족","만족","보통","불만족"] }] : [];
+    const sample = fd.get("start") === "sample";
+    const questions = sample ? INTAKE_SAMPLE.questions.map(([title, type, required, options = []]) => ({ id:uid(), title, type, required, options })) : [];
     btn.disabled = true;
     try {
-      const data = await api("/api/admin/forms", "POST", { title:fd.get("title"), description:fd.get("description"), questions });
-      await renderDashboard();
-      openCreatedModal(data.form);
+      const data = await api("/api/admin/forms", "POST", { title:fd.get("title"), description:fd.get("description"), consent:sample ? INTAKE_SAMPLE.consent : "", questions });
+      await onCreated(data.form);
     } catch (err) { toast(err.message); btn.disabled = false; }
   });
 }
@@ -276,15 +296,16 @@ function formCard(f) {
 async function renderDashboard() {
   const { forms } = await api("/api/admin/forms");
   const responses = forms.reduce((n, f) => n + f.responseCount, 0);
-  app.innerHTML = `<div class="page-head"><div><h1>설문 대시보드</h1><p>설문을 만들면 전용 공개 링크와 QR 코드가 함께 발급됩니다.</p></div><div class="top-actions"><button class="btn secondary" id="scan-btn">${ICON.qr}응답 QR 스캔</button><button class="btn" id="new-form">${ICON.plus}새 설문 만들기</button></div></div>
+  app.innerHTML = `<div class="page-head"><div><h1>설문 대시보드</h1><p>설문을 만들면 전용 공개 링크와 QR 코드가 함께 발급됩니다.</p></div><div class="top-actions"><button class="btn secondary" id="demo-btn">시연 모드</button><button class="btn secondary" id="scan-btn">${ICON.qr}응답 QR 스캔</button><button class="btn" id="new-form">${ICON.plus}새 설문 만들기</button></div></div>
   ${shareBanner()}
   <div class="stats-grid"><div class="stat-card"><span>전체 설문</span><strong>${forms.length}</strong></div><div class="stat-card"><span>게시 중</span><strong>${forms.filter(f => f.status === "published").length}</strong></div><div class="stat-card"><span>누적 응답</span><strong>${responses}</strong></div></div>
   <div class="toolbar"><h2>내 설문</h2><span class="muted small">${forms.length}개</span></div>
   <div class="form-list">${forms.length ? forms.map(formCard).join("") : `<div class="card empty"><strong>아직 만든 설문이 없습니다.</strong><p>첫 설문을 만들어 응답을 수집해 보세요.</p><button class="btn" id="empty-new">첫 설문 만들기</button></div>`}</div>`;
   const byId = Object.fromEntries(forms.map(f => [f.id, f]));
-  document.getElementById("new-form").addEventListener("click", openCreateModal);
+  document.getElementById("new-form").addEventListener("click", () => openCreateModal());
+  document.getElementById("demo-btn").addEventListener("click", () => navigate("/demo"));
   document.getElementById("scan-btn").addEventListener("click", openScanModal);
-  document.getElementById("empty-new")?.addEventListener("click", openCreateModal);
+  document.getElementById("empty-new")?.addEventListener("click", () => openCreateModal());
   onClickAll("[data-qr]", el => openShareModal(byId[el.dataset.qr]));
   onClickAll("[data-copy]", el => copyText(formLink(el.dataset.copy)));
   onClickAll("[data-edit]", el => navigate(`/edit/${el.dataset.edit}`));
@@ -480,6 +501,7 @@ async function saveEditor() {
     editor.title = data.form.title; editor.description = data.form.description; editor.consent = data.form.consent; editor.questions = clone(data.form.questions);
     if (!editor.questions.some(q => q.id === editor.openId)) editor.openId = editor.questions[0]?.id || null;
     editor.dirty = false;
+    channel?.postMessage({ type:"form" });
     return true;
   } catch (err) { toast(err.message); return false; }
 }
@@ -488,6 +510,7 @@ async function changeStatus(status) {
   try {
     const data = await api(`/api/admin/forms/${editor.form.id}/status`, "POST", { status });
     editor.form.status = data.form.status;
+    channel?.postMessage({ type:"form" });
     toast(status === "published" ? "설문을 게시했습니다." : "설문 응답을 종료했습니다.");
   } catch (e) { toast(e.message); }
   drawEditor();
@@ -519,6 +542,7 @@ function drawPublic(slug, form, kiosk) {
     btn.disabled = true;
     try {
       await api(`/api/public/forms/${slug}`, "POST", { answers, consent:fd.has("__consent") });
+      channel?.postMessage({ type:"response", slug });
       clearTimeout(kioskTimer);
       app.innerHTML = `<div class="public-wrap"><section class="card empty"><div class="emoji">✓</div><strong>응답이 제출되었습니다.</strong><p>참여해 주셔서 감사합니다.</p>${kiosk ? '<p class="muted small" id="kiosk-count"></p><button type="button" class="btn" id="kiosk-next">다음 응답 시작</button>' : ""}</section></div>`;
       if (kiosk) startKioskCountdown(restart);
@@ -567,11 +591,88 @@ async function renderPrint(id, requested) {
   document.getElementById("print-mode").addEventListener("change", e => navigate(`/print/${id}?mode=${e.target.value}`));
 }
 
+// ---------- demo ----------
+// Demo mode walks through 생성 → 작성 → 확인 on the server PC, each step in its own named window.
+// A window keeps its name while it navigates, so the step bar survives in-window navigation.
+const DEMO_STEPS = [
+  { win:"demo-edit", no:"①", label:"설문 생성" },
+  { win:"demo-fill", no:"②", label:"설문 작성" },
+  { win:"demo-results", no:"③", label:"설문 확인" }
+];
+const DEMO_HOME = "demo-home", PHONE_W = 420, PHONE_H = 820;
+// Windows of the same browser tell each other about new responses and saved forms, so the demo updates live.
+const channel = "BroadcastChannel" in window ? new BroadcastChannel("survey-desk") : null;
+let demoFormId = null;
+
+// Opening by name with an empty URL returns an already-open window as is (keeping unsaved edits there);
+// it is only navigated when it shows a different page.
+function openNamedWindow(name, url, features = "") {
+  const w = window.open("", name, features);
+  if (!w) { toast("팝업이 차단되었습니다. 주소창의 팝업 차단 아이콘에서 이 주소를 허용해 주세요."); return; }
+  if (w.location.pathname !== new URL(url, location.href).pathname) w.location.href = url;
+  w.focus();
+}
+// Editor on the left, the phone-sized respondent window in the middle, results on the right.
+function demoWindowFeatures(step) {
+  const { availLeft = 0, availTop = 0, availWidth:W, availHeight:H } = screen;
+  const side = Math.max(360, Math.floor((W - PHONE_W) / 2));
+  const [left, width, height] = [[0, side, H], [side, PHONE_W, Math.min(PHONE_H, H)], [side + PHONE_W, Math.max(360, W - side - PHONE_W), H]][step];
+  return `popup,left=${availLeft + left},top=${availTop},width=${width},height=${height}`;
+}
+async function renderDemo() {
+  window.name = DEMO_HOME;
+  const { forms } = await api("/api/admin/forms");
+  const form = forms.find(f => f.id === demoFormId) || forms.find(f => f.status === "published") || forms[0];
+  demoFormId = form?.id || null;
+  const head = `${BACK_LINK}<div class="page-head"><div><h1>시연 모드</h1><p>서버 PC 한 대에서 진료 전 문진의 생성 → 작성 → 확인을 각각 창으로 열어 봅니다. QR 없이 진행합니다.</p></div></div>`;
+  if (!form) {
+    app.innerHTML = `${head}<section class="card empty"><strong>아직 만든 설문이 없습니다.</strong><p>진료 전 문진 설문을 만들어 시연을 시작하세요.</p><button class="btn" id="demo-new">${ICON.plus}새 설문 만들기</button></section>`;
+  } else {
+    const published = form.status === "published";
+    const steps = [
+      { desc:"문진 질문을 만들고 게시합니다. 설문 편집 화면이 새 창으로 열립니다.", rows:[["질문", `${form.questions.length}개`], ["상태", statusChip(form.status)]], btn:`${ICON.external}편집 창 열기`, url:`/edit/${form.id}` },
+      { desc:"환자 화면을 휴대폰 크기 창으로 엽니다. 제출하면 8초 뒤 처음 화면으로 돌아가 다음 환자가 바로 작성할 수 있습니다.", rows:[["창 크기", `휴대폰 (${PHONE_W} × ${PHONE_H})`], ["응답 받기", published ? "가능" : "게시 후 가능"]], btn:`${ICON.phone}응답 창 열기`, url:`/f/${form.slug}?kiosk=1`, off:!published },
+      { desc:"환자별 문진 응답과 요약을 봅니다. 응답이 제출되면 새로고침 없이 바로 반영됩니다.", rows:[["응답", `${form.responseCount}건`]], btn:`${ICON.chart}결과 창 열기`, url:`/results/${form.id}` }
+    ];
+    app.innerHTML = `${head}
+    <section class="card demo-picker"><div class="field"><label for="demo-form">시연할 설문</label><select id="demo-form">${forms.map(f => `<option value="${f.id}" ${f.id === form.id ? "selected" : ""}>${esc(f.title)} · ${statusLabel(f.status)} · 응답 ${f.responseCount}건</option>`).join("")}</select></div><button type="button" class="btn secondary" id="demo-new">${ICON.plus}새 설문 만들기</button></section>
+    <div class="demo-steps">${steps.map((s, i) => `<section class="card demo-step"><div class="demo-step-head"><span class="step-no" aria-hidden="true">${i + 1}</span><h2>${DEMO_STEPS[i].label}</h2></div><p class="muted small">${s.desc}</p><dl>${s.rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>${s.off ? `<div class="notice">${ICON.info}<span>① 편집 창에서 <strong>저장하고 게시하기</strong>를 누르면 열 수 있습니다.</span></div>` : ""}<button type="button" class="btn" data-demo-step="${i}" ${s.off ? "disabled" : ""}>${s.btn}</button></section>`).join("")}</div>
+    <section class="card demo-layout"><div class="demo-map" aria-hidden="true"><span>① 편집</span><span>② 응답</span><span>③ 결과</span></div><div><h2>창 배치</h2><p>편집 창은 왼쪽, 응답 창은 가운데, 결과 창은 오른쪽에 열립니다.</p><p class="muted small">같은 버튼을 다시 누르면 이미 열린 창으로 이동합니다. 브라우저가 팝업을 막으면 주소창 오른쪽의 팝업 차단 아이콘에서 이 주소를 허용해 주세요.</p></div></section>`;
+    document.getElementById("demo-form").addEventListener("change", e => { demoFormId = e.target.value; renderDemo(); });
+    onClickAll("[data-demo-step]", el => { const i = Number(el.dataset.demoStep); openNamedWindow(DEMO_STEPS[i].win, steps[i].url, demoWindowFeatures(i)); });
+  }
+  bindBackLink();
+  document.getElementById("demo-new").addEventListener("click", () => openCreateModal(async (created) => {
+    demoFormId = created.id;
+    closeModal();
+    await renderDemo();
+    toast("설문을 만들었습니다. ① 편집 창을 열어 질문을 확인하세요.");
+  }));
+}
+// Thin bar under the top bar of each demo window, so the presenter can tell the windows apart.
+function drawDemoBar() {
+  const step = DEMO_STEPS.findIndex(s => s.win === window.name);
+  if (step < 0) return;
+  const bar = document.createElement("div");
+  bar.className = "demo-bar";
+  bar.innerHTML = `<strong class="demo-pill">시연</strong>${step === 1 ? '<span class="current">② 설문 작성</span><span>환자 화면</span>'
+    : DEMO_STEPS.map((s, i) => `<span${i === step ? ' class="current"' : ""}>${s.no} ${s.label}</span>`).join('<span aria-hidden="true">→</span>') + '<button type="button" class="btn outline tiny" id="demo-home">시연 페이지로</button>'}`;
+  document.querySelector(".topbar").after(bar);
+  bar.querySelector("#demo-home")?.addEventListener("click", () => openNamedWindow(DEMO_HOME, "/demo"));
+}
+channel?.addEventListener("message", ({ data }) => {
+  if (location.pathname === "/demo") { renderDemo().catch(() => {}); return; }
+  if (data.type !== "response" || !results || getResultsId() !== results.data.form.id || data.slug !== results.data.form.slug) return;
+  const { tab, query, page, selectedId } = results;
+  renderResults(results.data.form.id, { tab, query, page, selectedId }).then(() => toast("새 응답 1건이 반영되었습니다."), () => {});
+});
+
 // ---------- results ----------
-async function renderResults(id) {
+// `keep` carries view state (tab, search, page, selection) across a refresh.
+async function renderResults(id, keep = {}) {
   const data = await api(`/api/admin/forms/${id}/results`);
   const total = data.responses.length;
-  results = { data, numbered:data.responses.map((r, i) => ({ ...r, no:total - i })), tab:"summary", query:"", page:0, selectedId:null };
+  results = { data, numbered:data.responses.map((r, i) => ({ ...r, no:total - i })), tab:"summary", query:"", page:0, selectedId:null, ...keep };
   drawResults();
 }
 function drawResults() {
@@ -607,7 +708,7 @@ function drawResultsBody() {
     return;
   }
   if (!results.numbered.length) { body.innerHTML = '<section class="card empty">아직 접수된 응답이 없습니다.</section>'; return; }
-  body.innerHTML = `<div class="split"><section class="card split-list"><label for="r-search" class="label">응답 내용 검색</label><div class="search-box">${ICON.search}<input id="r-search" placeholder="예: 배송" value="${esc(results.query)}"></div><div id="resp-items"></div></section><section class="card split-main" id="resp-detail"></section></div>`;
+  body.innerHTML = `<div class="split"><section class="card split-list"><label for="r-search" class="label">응답 내용 검색</label><div class="search-box">${ICON.search}<input id="r-search" placeholder="예: 두통" value="${esc(results.query)}"></div><div id="resp-items"></div></section><section class="card split-main" id="resp-detail"></section></div>`;
   document.getElementById("r-search").addEventListener("input", e => { results.query = e.target.value; results.page = 0; results.selectedId = null; drawResponseList(); });
   document.getElementById("resp-items").addEventListener("click", e => {
     const b = e.target.closest("button");
@@ -704,4 +805,5 @@ function exportCsv(data) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+drawDemoBar();
 render();

@@ -230,7 +230,7 @@ function isFromServerPc(req) {
 }
 
 function serveStatic(req, res, pathname) {
-  const mapped = pathname === "/" || /^\/(f|edit|results|print)\/[a-f0-9-]+$/.test(pathname) ? "/index.html" : pathname;
+  const mapped = pathname === "/" || pathname === "/demo" || /^\/(f|edit|results|print)\/[a-f0-9-]+$/.test(pathname) ? "/index.html" : pathname;
   const file = path.resolve(PUBLIC_DIR, "." + decodeURIComponent(mapped));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return sendText(res, 403, "Forbidden");
   fs.readFile(file, (err, data) => {
