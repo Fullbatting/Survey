@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const os = require("node:os");
+const { surveyFingerprint } = require("./public/question-identity.js");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -155,9 +156,12 @@ function validateAnswers(form, answers) {
   return null;
 }
 
-// Changes whenever answers would map differently (question ids, types, options) or the consent notice changes,
-// so an offline answer QR made from an older version of the survey is rejected instead of being stored wrongly.
 function questionKey(form) {
+  return `v2.${surveyFingerprint(form, true)}`;
+}
+
+// Legacy keys did not include titles, required flags, or survey context.
+function legacyQuestionKey(form) {
   const questions = form.questions.map(q => [q.id, q.type, q.options]);
   return crypto.createHash("sha256").update(JSON.stringify(form.consent ? [questions, form.consent] : questions)).digest("base64url").slice(0, 8);
 }
@@ -372,7 +376,9 @@ async function saveOfflineResponse(req, res) {
   if (!data || typeof data !== "object" || !Array.isArray(data.a) || !nonce) throw new HttpError(400, "응답 QR을 읽을 수 없습니다.");
   const db = readDb();
   const form = openFormBySlug(db, data.s);
-  if (data.k !== questionKey(form) || data.a.length !== form.questions.length) throw new HttpError(409, "설문 문항이 바뀌어 이 응답 QR은 저장할 수 없습니다. 새 오프라인 QR을 비치해 주세요.");
+  const current = data.k === questionKey(form);
+  const legacy = data.k === legacyQuestionKey(form) && data.p === surveyFingerprint(form);
+  if ((!current && !legacy) || data.a.length !== form.questions.length) throw new HttpError(409, "설문 내용이 바뀌었거나 이전 형식의 응답 QR입니다. 새 오프라인 QR을 비치하고 다시 작성해 주세요.");
   if (db.responses.some(r => r.formId === form.id && r.offlineNonce === nonce)) throw new HttpError(409, "이미 저장된 응답입니다.");
   if (form.consent && data.c !== 1) throw new HttpError(400, CONSENT_REQUIRED);
   const answers = offlineAnswers(form, data.a);
