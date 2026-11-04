@@ -1,4 +1,4 @@
-# Survey Desk — Local MVP
+# 초진도우미 — Local MVP
 
 관리자가 설문을 만들고 공개 링크를 공유해 응답을 수집하며, 통계·개별 응답·CSV를 확인할 수 있는 로컬 우선 MVP입니다.
 

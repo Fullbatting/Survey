@@ -427,7 +427,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Survey MVP running at http://${HOST}:${PORT}`);
+  console.log(`초진도우미 running at http://${HOST}:${PORT}`);
   const share = shareInfo();
   console.log(share.localOnly ? "Survey links work on this PC only. Set HOST=0.0.0.0 to share on your network." : `Survey links use ${share.baseUrl}`);
   console.log(`Admin username: ${ADMIN_USER} (admin screens open on this PC only)`);

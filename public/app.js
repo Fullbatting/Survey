@@ -106,7 +106,7 @@ async function render() {
 }
 
 function renderLogin(error = "") {
-  app.innerHTML = `<div class="login-wrap"><section class="card"><div class="brand-mark login-mark">S</div><h1>관리자 로그인</h1><p class="subhead">설문을 만들고 응답 결과를 관리하세요. 초기 계정은 실행 환경 설정에 따라 달라집니다.</p>${error ? `<div class="error">${esc(error)}</div>` : ""}<form id="login-form"><div class="field"><label for="username">아이디</label><input class="input" id="username" name="username" value="admin" autocomplete="username" required></div><div class="field"><label for="password">비밀번호</label><input class="input" id="password" name="password" type="password" autocomplete="current-password" required></div><button class="btn wide">로그인</button></form><p class="muted small login-note">처음 실행 시 README의 관리자 비밀번호 설정 안내를 확인하세요.</p></section></div>`;
+  app.innerHTML = `<div class="login-wrap"><section class="card"><div class="brand-mark login-mark">초</div><h1>관리자 로그인</h1><p class="subhead">설문을 만들고 응답 결과를 관리하세요. 초기 계정은 실행 환경 설정에 따라 달라집니다.</p>${error ? `<div class="error">${esc(error)}</div>` : ""}<form id="login-form"><div class="field"><label for="username">아이디</label><input class="input" id="username" name="username" value="admin" autocomplete="username" required></div><div class="field"><label for="password">비밀번호</label><input class="input" id="password" name="password" type="password" autocomplete="current-password" required></div><button class="btn wide">로그인</button></form><p class="muted small login-note">처음 실행 시 README의 관리자 비밀번호 설정 안내를 확인하세요.</p></section></div>`;
   document.getElementById("login-form").addEventListener("submit", async e => {
     e.preventDefault(); const fd = new FormData(e.currentTarget);
     try { await api("/api/login", "POST", { username:fd.get("username"), password:fd.get("password") }); navigate("/"); }
@@ -115,7 +115,7 @@ function renderLogin(error = "") {
 }
 
 function renderAdminBlocked() {
-  app.innerHTML = `<div class="login-wrap"><section class="card"><div class="brand-mark login-mark">S</div><h1>서버 PC 전용 화면</h1><p class="subhead">설문 관리와 결과 확인은 설문 서버가 실행 중인 PC에서만 열 수 있습니다. 설문에 응답하려면 비치된 QR 코드를 스캔해 주세요.</p></section></div>`;
+  app.innerHTML = `<div class="login-wrap"><section class="card"><div class="brand-mark login-mark">초</div><h1>서버 PC 전용 화면</h1><p class="subhead">설문 관리와 결과 확인은 설문 서버가 실행 중인 PC에서만 열 수 있습니다. 설문에 응답하려면 비치된 QR 코드를 스캔해 주세요.</p></section></div>`;
 }
 
 // ---------- QR / share ----------
