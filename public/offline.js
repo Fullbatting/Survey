@@ -24,7 +24,9 @@ function renderForm(survey) {
       if (!v) return null;
       return ["radio", "select", "rating"].includes(q.type) ? Number(v) : v;
     });
-    renderAnswerQr(survey, toB64url(JSON.stringify({ s:survey.slug, k:survey.key, n:nonce(), a, ...(survey.consent ? { c:1 } : {}) })));
+    // Older survey links lack the new key; prove which content was displayed before accepting them.
+    const legacyProof = typeof survey.key === "string" && !survey.key.startsWith("v2.") ? { p:surveyFingerprint(survey) } : {};
+    renderAnswerQr(survey, toB64url(JSON.stringify({ s:survey.slug, k:survey.key, n:nonce(), a, ...(survey.consent ? { c:1 } : {}), ...legacyProof })));
   });
 }
 
